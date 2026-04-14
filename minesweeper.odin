@@ -68,14 +68,19 @@ cleanup :: proc() {
 	sdl3.Quit()
 }
 
-process_input :: proc() {
-	e: sdl3.Event
-	for sdl3.PollEvent(&e) {
-		#partial switch (e.type) {
-		case .QUIT:
-			ctx.should_close = true
-		}
+process_event :: proc(e: ^sdl3.Event) {
+	#partial switch (e.type) {
+	case .QUIT:
+		ctx.should_close = true
 	}
+}
+
+frame :: proc(do_input: bool) {
+	draw()
+
+	new_t := f64(sdl3.GetTicksNS()) / 1_000_000_000
+	ctx.dt = new_t - ctx.t
+	ctx.t = new_t
 }
 
 loop :: proc() {
@@ -87,7 +92,7 @@ loop :: proc() {
 	// window. https://wiki.libsdl.org/SDL3/AppFreezeDuringDrag
 	ok := sdl3.AddEventWatch(proc "c" (userdata: rawptr, event: ^sdl3.Event) -> bool {
 			context = (^runtime.Context)(userdata)^
-			if event.type == .WINDOW_EXPOSED || event.type == .WINDOW_PIXEL_SIZE_CHANGED {
+			if event.type == .WINDOW_EXPOSED {
 				frame(false)
 			}
 			return true
@@ -98,19 +103,18 @@ loop :: proc() {
 	}
 
 	for !ctx.should_close {
+		// Wait for events, then process them all
+		e: sdl3.Event
+		if !sdl3.WaitEvent(&e) {
+			panic("failed sdl3.WaitEvent")
+		}
+		process_event(&e)
+		for sdl3.PollEvent(&e) {
+			process_event(&e)
+		}
+
 		frame(true)
 	}
-}
-
-frame :: proc(do_input: bool) {
-	if do_input {
-		process_input()
-	}
-	draw()
-
-	new_t := f64(sdl3.GetTicksNS()) / 1_000_000_000
-	ctx.dt = new_t - ctx.t
-	ctx.t = new_t
 }
 
 main :: proc() {
@@ -120,7 +124,6 @@ main :: proc() {
 		log.errorf("Initialization failed.")
 		os.exit(1)
 	}
-
 	defer cleanup()
 
 	loop()
