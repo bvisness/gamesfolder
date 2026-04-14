@@ -107,7 +107,8 @@ draw :: proc() {
 		w = w,
 		h = h,
 	}
-	sdl3.RenderTexture(ctx.renderer, sanic, nil, &rect)
+	// sdl3.RenderTexture(ctx.renderer, sanic, nil, &rect)
+	sdl3.RenderTexture9Grid(ctx.renderer, sanic, nil, 138, 37, 28, 93, 1, &rect)
 
 	sdl3.RenderPresent(ctx.renderer)
 }
