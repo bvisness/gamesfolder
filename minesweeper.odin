@@ -1,5 +1,6 @@
 package minesweeper
 
+import "base:runtime"
 import "core:log"
 import "core:math"
 import "core:os"
@@ -78,17 +79,38 @@ process_input :: proc() {
 }
 
 loop :: proc() {
+	loop_context := context
 	ctx.t = f64(sdl3.GetTicksNS()) / 1_000_000_000
 	ctx.dt = 0.001 // default to 1ms for the first frame
 
-	for !ctx.should_close {
-		process_input()
-		draw()
-
-		new_t := f64(sdl3.GetTicksNS()) / 1_000_000_000
-		ctx.dt = new_t - ctx.t
-		ctx.t = new_t
+	// Some jank you have to do in order to continue drawing while resizing the
+	// window. https://wiki.libsdl.org/SDL3/AppFreezeDuringDrag
+	ok := sdl3.AddEventWatch(proc "c" (userdata: rawptr, event: ^sdl3.Event) -> bool {
+			context = (^runtime.Context)(userdata)^
+			if event.type == .WINDOW_EXPOSED || event.type == .WINDOW_PIXEL_SIZE_CHANGED {
+				frame(false)
+			}
+			return true
+		}, &loop_context)
+	if !ok {
+		log.error("sdl3.AddEventWatch failed.")
+		return
 	}
+
+	for !ctx.should_close {
+		frame(true)
+	}
+}
+
+frame :: proc(do_input: bool) {
+	if do_input {
+		process_input()
+	}
+	draw()
+
+	new_t := f64(sdl3.GetTicksNS()) / 1_000_000_000
+	ctx.dt = new_t - ctx.t
+	ctx.t = new_t
 }
 
 main :: proc() {
