@@ -1,11 +1,16 @@
 package minesweeper
 
+import "base:intrinsics"
 import "base:runtime"
 import "core:log"
 import "core:math"
 import "core:os"
+import "core:path/filepath"
+import "core:strings"
 
 import "vendor:sdl3"
+
+sanic: ^sdl3.Texture
 
 CTX :: struct {
 	window:       ^sdl3.Window,
@@ -18,6 +23,25 @@ CTX :: struct {
 }
 
 ctx := CTX{}
+
+must :: proc(val: $T, msg: string, args: ..any, location := #caller_location) -> T {
+	zero: T
+	if val == zero {
+		log.errorf(msg, ..args, location = location)
+		intrinsics.debug_trap()
+	}
+	return val
+}
+
+must1 :: proc(val: $T, err: $E, msg: string, args: ..any, location := #caller_location) -> T {
+	zero: E
+	if err != zero {
+		log.errorf(msg, ..args, location = location)
+		log.errorf("Crashed with error: %v.", err, location = location)
+		intrinsics.debug_trap()
+	}
+	return val
+}
 
 init_sdl :: proc() -> (ok: bool) {
 	if !sdl3.SetAppMetadata("Minesweeper", "0.1", "me.bvisness.gamesfolder.minesweeper") {
@@ -42,23 +66,48 @@ init_sdl :: proc() -> (ok: bool) {
 		return false
 	}
 
+	sanic = load_texture_from_png("resources/gottagofast.png")
+
 	return true
+}
+
+load_texture_from_png :: proc(path: string) -> ^sdl3.Texture {
+	fullpath := must1(
+		filepath.join([]string{string(sdl3.GetBasePath()), path}, context.temp_allocator),
+		"Failed to join path.",
+	)
+	res := must(
+		strings.clone_to_cstring(fullpath, context.temp_allocator),
+		"Failed to load image %s.",
+		path,
+	)
+
+	surface := must(sdl3.LoadPNG(res), "Failed to load bitmap %s: %s.", path, sdl3.GetError())
+	defer sdl3.DestroySurface(surface)
+
+	texture := must(
+		sdl3.CreateTextureFromSurface(ctx.renderer, surface),
+		"Failed to create texture for %s: %s.",
+		path,
+		sdl3.GetError(),
+	)
+
+	return texture
 }
 
 draw :: proc() {
 	sdl3.SetRenderDrawColor(ctx.renderer, 0, 0, 0, 255)
 	sdl3.RenderClear(ctx.renderer)
 
-	x: f32 = 200 + f32(math.sin(ctx.t)) * 100
-	y: f32 = 200 + f32(math.sin(ctx.t)) * 100
+	w: f32 = 200 + f32(math.sin(ctx.t)) * 100
+	h: f32 = 200 + f32(math.sin(ctx.t)) * 100
 	rect := sdl3.FRect {
-		x = x,
-		y = y,
-		w = 100,
-		h = 40,
+		x = 100,
+		y = 100,
+		w = w,
+		h = h,
 	}
-	sdl3.SetRenderDrawColor(ctx.renderer, 255, 255, 255, 255)
-	sdl3.RenderFillRect(ctx.renderer, &rect)
+	sdl3.RenderTexture(ctx.renderer, sanic, nil, &rect)
 
 	sdl3.RenderPresent(ctx.renderer)
 }
@@ -84,6 +133,8 @@ frame :: proc(do_input: bool) {
 }
 
 loop :: proc() {
+	free_all(context.temp_allocator)
+
 	loop_context := context
 	ctx.t = f64(sdl3.GetTicksNS()) / 1_000_000_000
 	ctx.dt = 0.001 // default to 1ms for the first frame
