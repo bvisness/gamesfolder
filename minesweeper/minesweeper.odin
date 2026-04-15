@@ -3,17 +3,22 @@ package minesweeper
 import "base:intrinsics"
 import "base:runtime"
 import "core:log"
-import "core:math"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
 
 import "vendor:sdl3"
 
+BUTTON_SIZE :: 36
+BUTTON_PADDING :: 4
+
 CTX :: struct {
 	window:       ^sdl3.Window,
 	renderer:     ^sdl3.Renderer,
 	should_close: bool,
+
+	// Size
+	window_size:  [2]i32,
 
 	// Timing
 	t:            f64,
@@ -35,14 +40,14 @@ Texture :: struct {
 
 	// Filled in when loading
 	tex:         ^sdl3.Texture,
-	orig:        sdl3.FRect,
+	rect:        sdl3.FRect,
 }
 
 button := Texture {
 	mode        = .NINESLICE,
-	src         = sdl3.FRect{214, 228, 526 - 214, 543 - 228},
-	slices      = {272, 464, 289, 483},
-	slice_scale = 0.4,
+	src         = sdl3.FRect{210, 1183, 523 - 210, 1496 - 1183},
+	slices      = {272, 460, 1251, 1435},
+	slice_scale = 0.05,
 }
 
 numbers := []Texture {
@@ -107,7 +112,7 @@ load_textures_from_png :: proc(path: string, textures: ..^Texture) {
 
 	for tex in textures {
 		tex.tex = sdl_tex
-		tex.orig = sdl3.FRect{0, 0, f32(surface.w), f32(surface.h)}
+		tex.rect = sdl3.FRect{0, 0, f32(surface.w), f32(surface.h)}
 	}
 }
 
@@ -163,7 +168,7 @@ render_texture :: proc(texture: ^Texture, dst: ^sdl3.FRect) {
 	case .NORMAL:
 		sdl3.RenderTexture(ctx.renderer, texture.tex, src, dst)
 	case .NINESLICE:
-		src_rect := texture.src.? or_else texture.orig
+		src_rect := texture.src.? or_else texture.rect
 		sdl3.RenderTexture9Grid(
 			ctx.renderer,
 			texture.tex,
@@ -176,7 +181,7 @@ render_texture :: proc(texture: ^Texture, dst: ^sdl3.FRect) {
 			dst,
 		)
 	case .NINESLICE_TILED:
-		src_rect := texture.src.? or_else texture.orig
+		src_rect := texture.src.? or_else texture.rect
 		sdl3.RenderTexture9GridTiled(
 			ctx.renderer,
 			texture.tex,
@@ -198,15 +203,36 @@ draw :: proc() {
 	sdl3.SetRenderDrawColor(ctx.renderer, 255, 255, 255, 255)
 	sdl3.RenderClear(ctx.renderer)
 
-	w: f32 = 200 + f32(math.sin(ctx.t)) * 100
-	h: f32 = 200 + f32(math.sin(ctx.t)) * 100
-	rect := sdl3.FRect {
-		x = 100,
-		y = 100,
-		w = w,
-		h = h,
+	board_rect := sdl3.FRect {
+		20,
+		20,
+		f32(ctx.window_size.x) - 20 * 2,
+		f32(ctx.window_size.y) - 20 * 2,
 	}
-	render_texture(&button, &rect)
+	nrows := int(board_rect.h) / BUTTON_SIZE
+	ncols := int(board_rect.w) / BUTTON_SIZE
+
+	for r in 0 ..< nrows {
+		for c in 0 ..< ncols {
+			rect := sdl3.FRect {
+				x = board_rect.x + f32(BUTTON_SIZE * c),
+				y = board_rect.y + f32(BUTTON_SIZE * r),
+				w = BUTTON_SIZE,
+				h = BUTTON_SIZE,
+			}
+			render_texture(&button, &rect)
+
+			num :=
+				numbers[(int(ctx.t - 0.1 * f64(r) - 0.1 * f64(c)) + len(numbers)) % len(numbers)]
+			nrect := sdl3.FRect {
+				rect.x + BUTTON_PADDING,
+				rect.y + BUTTON_PADDING,
+				rect.w - BUTTON_PADDING * 2,
+				rect.h - BUTTON_PADDING * 2,
+			}
+			render_texture(&num, &nrect)
+		}
+	}
 
 	sdl3.RenderPresent(ctx.renderer)
 }
@@ -220,6 +246,9 @@ process_event :: proc(e: ^sdl3.Event) {
 	#partial switch (e.type) {
 	case .QUIT:
 		ctx.should_close = true
+	case .WINDOW_RESIZED:
+		sdl3.GetWindowSize(ctx.window, &ctx.window_size.x, &ctx.window_size.y)
+		log.infof("Window now has size: %v.", ctx.window_size)
 	}
 }
 
@@ -243,6 +272,7 @@ loop :: proc() {
 	ok := sdl3.AddEventWatch(proc "c" (userdata: rawptr, event: ^sdl3.Event) -> bool {
 			context = (^runtime.Context)(userdata)^
 			if event.type == .WINDOW_EXPOSED {
+				sdl3.GetWindowSize(ctx.window, &ctx.window_size.x, &ctx.window_size.y)
 				frame(false)
 			}
 			return true
