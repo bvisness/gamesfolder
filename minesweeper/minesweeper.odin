@@ -10,8 +10,6 @@ import "core:strings"
 
 import "vendor:sdl3"
 
-sanic: ^sdl3.Texture
-
 CTX :: struct {
 	window:       ^sdl3.Window,
 	renderer:     ^sdl3.Renderer,
@@ -21,8 +19,51 @@ CTX :: struct {
 	t:            f64,
 	dt:           f64,
 }
-
 ctx := CTX{}
+
+TextureDrawMode :: enum {
+	NORMAL,
+	NINESLICE,
+	NINESLICE_TILED,
+}
+
+Texture :: struct {
+	mode:        TextureDrawMode,
+	src:         Maybe(sdl3.FRect),
+	slices:      [4]f32, // left, right, top, bottom, relative to original img
+	slice_scale: f32,
+
+	// Filled in when loading
+	tex:         ^sdl3.Texture,
+	orig:        sdl3.FRect,
+}
+
+button := Texture {
+	mode        = .NINESLICE,
+	src         = sdl3.FRect{214, 228, 526 - 214, 543 - 228},
+	slices      = {272, 464, 289, 483},
+	slice_scale = 0.4,
+}
+
+numbers := []Texture {
+	{src = sdl3.FRect{570, 284, 200, 200}}, // 1
+	{src = sdl3.FRect{820, 284, 200, 200}}, // 2
+	{src = sdl3.FRect{1070, 284, 200, 200}}, // 3
+	{src = sdl3.FRect{570, 534, 200, 200}}, // 4
+	{src = sdl3.FRect{820, 534, 200, 200}}, // 5
+	{src = sdl3.FRect{1070, 534, 200, 200}}, // 6
+	{src = sdl3.FRect{570, 784, 200, 200}}, // 7
+	{src = sdl3.FRect{820, 784, 200, 200}}, // 8
+}
+
+flag := Texture {
+	src = sdl3.FRect{1070, 784, 200, 200},
+}
+
+trapf :: proc(msg: string, args: ..any, location := #caller_location) {
+	log.errorf(msg, ..args, location = location)
+	intrinsics.debug_trap()
+}
 
 must :: proc(val: $T, msg: string, args: ..any, location := #caller_location) -> T {
 	zero: T
@@ -41,6 +82,41 @@ must1 :: proc(val: $T, err: $E, msg: string, args: ..any, location := #caller_lo
 		intrinsics.debug_trap()
 	}
 	return val
+}
+
+load_textures_from_png :: proc(path: string, textures: ..^Texture) {
+	fullpath := must1(
+		filepath.join([]string{string(sdl3.GetBasePath()), path}, context.temp_allocator),
+		"Failed to join path.",
+	)
+	res := must(
+		strings.clone_to_cstring(fullpath, context.temp_allocator),
+		"Failed to load image %s.",
+		path,
+	)
+
+	surface := must(sdl3.LoadPNG(res), "Failed to load bitmap %s: %s.", path, sdl3.GetError())
+	defer sdl3.DestroySurface(surface)
+
+	sdl_tex := must(
+		sdl3.CreateTextureFromSurface(ctx.renderer, surface),
+		"Failed to create texture for %s: %s.",
+		path,
+		sdl3.GetError(),
+	)
+
+	for tex in textures {
+		tex.tex = sdl_tex
+		tex.orig = sdl3.FRect{0, 0, f32(surface.w), f32(surface.h)}
+	}
+}
+
+load_texture_slice_from_png :: proc(path: string, textures: ^[]Texture) {
+	ptrs := make([]^Texture, len(textures), context.temp_allocator)
+	for _, i in ptrs {
+		ptrs[i] = &textures[i]
+	}
+	load_textures_from_png(path, ..ptrs)
 }
 
 init_sdl :: proc() -> (ok: bool) {
@@ -66,37 +142,60 @@ init_sdl :: proc() -> (ok: bool) {
 		return false
 	}
 
-	sanic = load_texture_from_png("resources/gottagofast.png")
+	load_texture_slice_from_png("resources/minesweeper.png", &numbers)
+	load_textures_from_png("resources/minesweeper.png", &flag, &button)
 
 	return true
 }
 
-load_texture_from_png :: proc(path: string) -> ^sdl3.Texture {
-	fullpath := must1(
-		filepath.join([]string{string(sdl3.GetBasePath()), path}, context.temp_allocator),
-		"Failed to join path.",
-	)
-	res := must(
-		strings.clone_to_cstring(fullpath, context.temp_allocator),
-		"Failed to load image %s.",
-		path,
-	)
+render_texture :: proc(texture: ^Texture, dst: ^sdl3.FRect) {
+	assert(texture.tex != nil, "texture was not loaded!")
+	src: Maybe(^sdl3.FRect)
+	if _, ok := texture.src.?; ok {
+		src = &texture.src.?
+	}
+	scale := texture.slice_scale
+	if scale == 0 {
+		scale = 1
+	}
 
-	surface := must(sdl3.LoadPNG(res), "Failed to load bitmap %s: %s.", path, sdl3.GetError())
-	defer sdl3.DestroySurface(surface)
-
-	texture := must(
-		sdl3.CreateTextureFromSurface(ctx.renderer, surface),
-		"Failed to create texture for %s: %s.",
-		path,
-		sdl3.GetError(),
-	)
-
-	return texture
+	switch texture.mode {
+	case .NORMAL:
+		sdl3.RenderTexture(ctx.renderer, texture.tex, src, dst)
+	case .NINESLICE:
+		src_rect := texture.src.? or_else texture.orig
+		sdl3.RenderTexture9Grid(
+			ctx.renderer,
+			texture.tex,
+			src,
+			texture.slices[0] - src_rect.x,
+			(src_rect.x + src_rect.w) - texture.slices[1],
+			texture.slices[2] - src_rect.y,
+			(src_rect.y + src_rect.h) - texture.slices[3],
+			scale,
+			dst,
+		)
+	case .NINESLICE_TILED:
+		src_rect := texture.src.? or_else texture.orig
+		sdl3.RenderTexture9GridTiled(
+			ctx.renderer,
+			texture.tex,
+			src,
+			texture.slices[0] - src_rect.x,
+			(src_rect.x + src_rect.w) - texture.slices[1],
+			texture.slices[2] - src_rect.y,
+			(src_rect.y + src_rect.h) - texture.slices[3],
+			scale,
+			dst,
+			scale,
+		)
+	case:
+		trapf("bad render mode: %v", texture.mode)
+	}
 }
 
 draw :: proc() {
-	sdl3.SetRenderDrawColor(ctx.renderer, 0, 0, 0, 255)
+	sdl3.SetRenderDrawColor(ctx.renderer, 255, 255, 255, 255)
 	sdl3.RenderClear(ctx.renderer)
 
 	w: f32 = 200 + f32(math.sin(ctx.t)) * 100
@@ -107,8 +206,7 @@ draw :: proc() {
 		w = w,
 		h = h,
 	}
-	// sdl3.RenderTexture(ctx.renderer, sanic, nil, &rect)
-	sdl3.RenderTexture9Grid(ctx.renderer, sanic, nil, 138, 37, 28, 93, 1, &rect)
+	render_texture(&button, &rect)
 
 	sdl3.RenderPresent(ctx.renderer)
 }
