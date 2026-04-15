@@ -12,19 +12,8 @@ import "vendor:sdl3"
 BUTTON_SIZE :: 36
 BUTTON_PADDING :: 4
 
-CTX :: struct {
-	window:       ^sdl3.Window,
-	renderer:     ^sdl3.Renderer,
-	should_close: bool,
-
-	// Size
-	window_size:  [2]i32,
-
-	// Timing
-	t:            f64,
-	dt:           f64,
-}
-ctx := CTX{}
+// ----------------------------------------------------------------------------
+// Textures
 
 TextureDrawMode :: enum {
 	NORMAL,
@@ -42,9 +31,6 @@ Texture :: struct {
 	tex:         ^sdl3.Texture,
 	rect:        sdl3.FRect,
 }
-
-// ----------------------------------------------------------------------------
-// Textures
 
 button := Texture {
 	mode        = .NINESLICE,
@@ -68,13 +54,13 @@ flag := Texture {
 	src = sdl3.FRect{1070, 784, 200, 200},
 }
 
+// ----------------------------------------------------------------------------
+// Utilities
+
 trapf :: proc(msg: string, args: ..any, location := #caller_location) {
 	log.errorf(msg, ..args, location = location)
 	intrinsics.debug_trap()
 }
-
-// ----------------------------------------------------------------------------
-// Utilities
 
 must :: proc(val: $T, msg: string, args: ..any, location := #caller_location) -> T {
 	zero: T
@@ -97,6 +83,20 @@ must1 :: proc(val: $T, err: $E, msg: string, args: ..any, location := #caller_lo
 
 // ----------------------------------------------------------------------------
 // Loading & initialization
+
+CTX :: struct {
+	window:       ^sdl3.Window,
+	renderer:     ^sdl3.Renderer,
+	should_close: bool,
+
+	// Size
+	window_size:  [2]i32,
+
+	// Timing
+	t:            f64,
+	dt:           f64,
+}
+ctx := CTX{}
 
 init_sdl :: proc() -> (ok: bool) {
 	if !sdl3.SetAppMetadata("Minesweeper", "0.1", "me.bvisness.gamesfolder.minesweeper") {
