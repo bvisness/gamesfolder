@@ -43,6 +43,9 @@ Texture :: struct {
 	rect:        sdl3.FRect,
 }
 
+// ----------------------------------------------------------------------------
+// Textures
+
 button := Texture {
 	mode        = .NINESLICE,
 	src         = sdl3.FRect{210, 1183, 523 - 210, 1496 - 1183},
@@ -70,6 +73,9 @@ trapf :: proc(msg: string, args: ..any, location := #caller_location) {
 	intrinsics.debug_trap()
 }
 
+// ----------------------------------------------------------------------------
+// Utilities
+
 must :: proc(val: $T, msg: string, args: ..any, location := #caller_location) -> T {
 	zero: T
 	if val == zero {
@@ -87,6 +93,43 @@ must1 :: proc(val: $T, err: $E, msg: string, args: ..any, location := #caller_lo
 		intrinsics.debug_trap()
 	}
 	return val
+}
+
+// ----------------------------------------------------------------------------
+// Loading & initialization
+
+init_sdl :: proc() -> (ok: bool) {
+	if !sdl3.SetAppMetadata("Minesweeper", "0.1", "me.bvisness.gamesfolder.minesweeper") {
+		log.errorf("sdl3.SetAppMetadata failed.")
+		return
+	}
+
+	if sdl_res := sdl3.Init(sdl3.INIT_VIDEO); !sdl_res {
+		log.errorf("sdl3.Init failed.")
+		return false
+	}
+
+	if !sdl3.CreateWindowAndRenderer(
+		"Minesweeper",
+		400,
+		400,
+		sdl3.WindowFlags{.RESIZABLE},
+		&ctx.window,
+		&ctx.renderer,
+	) {
+		log.errorf("sdl3.CreateWindowAndRenderer failed.")
+		return false
+	}
+
+	load_texture_slice_from_png("resources/minesweeper.png", &numbers)
+	load_textures_from_png("resources/minesweeper.png", &flag, &button)
+
+	return true
+}
+
+cleanup :: proc() {
+	sdl3.DestroyWindow(ctx.window)
+	sdl3.Quit()
 }
 
 load_textures_from_png :: proc(path: string, textures: ..^Texture) {
@@ -124,33 +167,45 @@ load_texture_slice_from_png :: proc(path: string, textures: ^[]Texture) {
 	load_textures_from_png(path, ..ptrs)
 }
 
-init_sdl :: proc() -> (ok: bool) {
-	if !sdl3.SetAppMetadata("Minesweeper", "0.1", "me.bvisness.gamesfolder.minesweeper") {
-		log.errorf("sdl3.SetAppMetadata failed.")
-		return
+// ----------------------------------------------------------------------------
+// Rendering
+
+draw :: proc() {
+	sdl3.SetRenderDrawColor(ctx.renderer, 255, 255, 255, 255)
+	sdl3.RenderClear(ctx.renderer)
+
+	board_rect := sdl3.FRect {
+		20,
+		20,
+		f32(ctx.window_size.x) - 20 * 2,
+		f32(ctx.window_size.y) - 20 * 2,
+	}
+	nrows := int(board_rect.h) / BUTTON_SIZE
+	ncols := int(board_rect.w) / BUTTON_SIZE
+
+	for r in 0 ..< nrows {
+		for c in 0 ..< ncols {
+			rect := sdl3.FRect {
+				x = board_rect.x + f32(BUTTON_SIZE * c),
+				y = board_rect.y + f32(BUTTON_SIZE * r),
+				w = BUTTON_SIZE,
+				h = BUTTON_SIZE,
+			}
+			render_texture(&button, &rect)
+
+			num :=
+				numbers[(int(ctx.t - 0.1 * f64(r) - 0.1 * f64(c)) + len(numbers)) % len(numbers)]
+			nrect := sdl3.FRect {
+				rect.x + BUTTON_PADDING,
+				rect.y + BUTTON_PADDING,
+				rect.w - BUTTON_PADDING * 2,
+				rect.h - BUTTON_PADDING * 2,
+			}
+			render_texture(&num, &nrect)
+		}
 	}
 
-	if sdl_res := sdl3.Init(sdl3.INIT_VIDEO); !sdl_res {
-		log.errorf("sdl3.Init failed.")
-		return false
-	}
-
-	if !sdl3.CreateWindowAndRenderer(
-		"Minesweeper",
-		400,
-		400,
-		sdl3.WindowFlags{.RESIZABLE},
-		&ctx.window,
-		&ctx.renderer,
-	) {
-		log.errorf("sdl3.CreateWindowAndRenderer failed.")
-		return false
-	}
-
-	load_texture_slice_from_png("resources/minesweeper.png", &numbers)
-	load_textures_from_png("resources/minesweeper.png", &flag, &button)
-
-	return true
+	sdl3.RenderPresent(ctx.renderer)
 }
 
 render_texture :: proc(texture: ^Texture, dst: ^sdl3.FRect) {
@@ -199,66 +254,8 @@ render_texture :: proc(texture: ^Texture, dst: ^sdl3.FRect) {
 	}
 }
 
-draw :: proc() {
-	sdl3.SetRenderDrawColor(ctx.renderer, 255, 255, 255, 255)
-	sdl3.RenderClear(ctx.renderer)
-
-	board_rect := sdl3.FRect {
-		20,
-		20,
-		f32(ctx.window_size.x) - 20 * 2,
-		f32(ctx.window_size.y) - 20 * 2,
-	}
-	nrows := int(board_rect.h) / BUTTON_SIZE
-	ncols := int(board_rect.w) / BUTTON_SIZE
-
-	for r in 0 ..< nrows {
-		for c in 0 ..< ncols {
-			rect := sdl3.FRect {
-				x = board_rect.x + f32(BUTTON_SIZE * c),
-				y = board_rect.y + f32(BUTTON_SIZE * r),
-				w = BUTTON_SIZE,
-				h = BUTTON_SIZE,
-			}
-			render_texture(&button, &rect)
-
-			num :=
-				numbers[(int(ctx.t - 0.1 * f64(r) - 0.1 * f64(c)) + len(numbers)) % len(numbers)]
-			nrect := sdl3.FRect {
-				rect.x + BUTTON_PADDING,
-				rect.y + BUTTON_PADDING,
-				rect.w - BUTTON_PADDING * 2,
-				rect.h - BUTTON_PADDING * 2,
-			}
-			render_texture(&num, &nrect)
-		}
-	}
-
-	sdl3.RenderPresent(ctx.renderer)
-}
-
-cleanup :: proc() {
-	sdl3.DestroyWindow(ctx.window)
-	sdl3.Quit()
-}
-
-process_event :: proc(e: ^sdl3.Event) {
-	#partial switch (e.type) {
-	case .QUIT:
-		ctx.should_close = true
-	case .WINDOW_RESIZED:
-		sdl3.GetWindowSize(ctx.window, &ctx.window_size.x, &ctx.window_size.y)
-		log.infof("Window now has size: %v.", ctx.window_size)
-	}
-}
-
-frame :: proc(do_input: bool) {
-	draw()
-
-	new_t := f64(sdl3.GetTicksNS()) / 1_000_000_000
-	ctx.dt = new_t - ctx.t
-	ctx.t = new_t
-}
+// ----------------------------------------------------------------------------
+// Game loop
 
 loop :: proc() {
 	free_all(context.temp_allocator)
@@ -296,6 +293,27 @@ loop :: proc() {
 		frame(true)
 	}
 }
+
+process_event :: proc(e: ^sdl3.Event) {
+	#partial switch (e.type) {
+	case .QUIT:
+		ctx.should_close = true
+	case .WINDOW_RESIZED:
+		sdl3.GetWindowSize(ctx.window, &ctx.window_size.x, &ctx.window_size.y)
+		log.infof("Window now has size: %v.", ctx.window_size)
+	}
+}
+
+frame :: proc(do_input: bool) {
+	draw()
+
+	new_t := f64(sdl3.GetTicksNS()) / 1_000_000_000
+	ctx.dt = new_t - ctx.t
+	ctx.t = new_t
+}
+
+// ----------------------------------------------------------------------------
+// Main
 
 main :: proc() {
 	context.logger = log.create_console_logger()
