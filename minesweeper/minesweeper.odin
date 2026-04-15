@@ -3,6 +3,8 @@ package minesweeper
 import "base:intrinsics"
 import "base:runtime"
 import "core:log"
+import "core:math/rand"
+import "core:mem"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
@@ -11,6 +13,78 @@ import "vendor:sdl3"
 
 BUTTON_SIZE :: 36
 BUTTON_PADDING :: 4
+MAX_ROWS, MAX_COLS :: 20, 40
+
+// ----------------------------------------------------------------------------
+// Game logic
+
+game_arena_buf: [4 * mem.Megabyte]byte
+game_arena: mem.Arena
+game_allocator: runtime.Allocator
+
+GameState :: struct {
+	board_size: [2]int,
+	board:      []Cell,
+}
+
+CellProperty :: enum {
+	REVEALED, // whether the player has revealed the cell
+	MINE, // whether the cell has a mine
+	FLAG, // whether the cell has been flagged
+	QUESTION, // whether the cell has been question-marked
+}
+
+Cell :: bit_set[CellProperty;u8]
+
+game_state := GameState{}
+
+get_board_rect :: proc() -> sdl3.FRect {
+	return sdl3.FRect{20, 20, f32(ctx.window_size.x) - 20 * 2, f32(ctx.window_size.y) - 20 * 2}
+}
+
+new_game :: proc() {
+	free_all(game_allocator)
+
+	board_rect := get_board_rect()
+	ncols := int(board_rect.w) / BUTTON_SIZE
+	nrows := int(board_rect.h) / BUTTON_SIZE
+
+	game_state = GameState {
+		board_size = {ncols, nrows},
+		board      = make([]Cell, nrows * ncols, game_allocator),
+	}
+
+	for &cell in game_state.board {
+		if rand.float32() > 0.75 {
+			cell += {.MINE}
+		}
+	}
+}
+
+get_cell :: proc(row, col: int) -> ^Cell {
+	return &game_state.board[row * game_state.board_size.x + col]
+}
+
+count_mines :: proc(row, col: int) -> int {
+	num_mines := 0
+	for roff in -1 ..= 1 {
+		for coff in -1 ..= 1 {
+			if roff == 0 && coff == 0 {
+				continue
+			}
+
+			r := row + roff
+			c := col + coff
+			row_ok := 0 <= r && r < game_state.board_size.y
+			col_ok := 0 <= c && c < game_state.board_size.x
+			if row_ok && col_ok && .MINE in get_cell(r, c) {
+				num_mines += 1
+			}
+		}
+	}
+	assert(0 <= num_mines && num_mines <= 8)
+	return num_mines
+}
 
 // ----------------------------------------------------------------------------
 // Textures
@@ -52,6 +126,12 @@ numbers := []Texture {
 
 flag := Texture {
 	src = sdl3.FRect{1070, 784, 200, 200},
+}
+question := Texture {
+	src = sdl3.FRect{570, 1034, 200, 200},
+}
+mine := Texture {
+	src = sdl3.FRect{820, 1034, 200, 200},
 }
 
 // ----------------------------------------------------------------------------
@@ -122,9 +202,14 @@ init_sdl :: proc() -> (ok: bool) {
 	}
 
 	load_texture_slice_from_png("resources/minesweeper.png", &numbers)
-	load_textures_from_png("resources/minesweeper.png", &flag, &button)
+	load_textures_from_png("resources/minesweeper.png", &button, &flag, &question, &mine)
 
 	return true
+}
+
+init_game :: proc() {
+	mem.arena_init(&game_arena, game_arena_buf[:])
+	game_allocator = mem.arena_allocator(&game_arena)
 }
 
 cleanup :: proc() {
@@ -174,34 +259,37 @@ draw :: proc() {
 	sdl3.SetRenderDrawColor(ctx.renderer, 255, 255, 255, 255)
 	sdl3.RenderClear(ctx.renderer)
 
-	board_rect := sdl3.FRect {
-		20,
-		20,
-		f32(ctx.window_size.x) - 20 * 2,
-		f32(ctx.window_size.y) - 20 * 2,
-	}
-	nrows := int(board_rect.h) / BUTTON_SIZE
-	ncols := int(board_rect.w) / BUTTON_SIZE
+	board_rect := get_board_rect()
+	for c in 0 ..< game_state.board_size.x {
+		for r in 0 ..< game_state.board_size.y {
+			cell := get_cell(r, c)
+			num_mines := count_mines(r, c)
 
-	for r in 0 ..< nrows {
-		for c in 0 ..< ncols {
 			rect := sdl3.FRect {
 				x = board_rect.x + f32(BUTTON_SIZE * c),
 				y = board_rect.y + f32(BUTTON_SIZE * r),
 				w = BUTTON_SIZE,
 				h = BUTTON_SIZE,
 			}
-			render_texture(&button, &rect)
-
-			num :=
-				numbers[(int(ctx.t - 0.1 * f64(r) - 0.1 * f64(c)) + len(numbers)) % len(numbers)]
 			nrect := sdl3.FRect {
 				rect.x + BUTTON_PADDING,
 				rect.y + BUTTON_PADDING,
 				rect.w - BUTTON_PADDING * 2,
 				rect.h - BUTTON_PADDING * 2,
 			}
-			render_texture(&num, &nrect)
+
+			if .REVEALED not_in cell {
+				render_texture(&button, &rect)
+			}
+
+			// if .REVEALED in cell {
+			if .MINE in cell {
+				render_texture(&mine, &nrect)
+			} else if num_mines > 0 {
+				num := numbers[num_mines - 1]
+				render_texture(&num, &nrect)
+			}
+			// }
 		}
 	}
 
@@ -270,6 +358,7 @@ loop :: proc() {
 			context = (^runtime.Context)(userdata)^
 			if event.type == .WINDOW_EXPOSED {
 				sdl3.GetWindowSize(ctx.window, &ctx.window_size.x, &ctx.window_size.y)
+				new_game()
 				frame(false)
 			}
 			return true
@@ -300,6 +389,7 @@ process_event :: proc(e: ^sdl3.Event) {
 		ctx.should_close = true
 	case .WINDOW_RESIZED:
 		sdl3.GetWindowSize(ctx.window, &ctx.window_size.x, &ctx.window_size.y)
+		new_game()
 		log.infof("Window now has size: %v.", ctx.window_size)
 	}
 }
@@ -323,6 +413,8 @@ main :: proc() {
 		os.exit(1)
 	}
 	defer cleanup()
+
+	init_game()
 
 	loop()
 
