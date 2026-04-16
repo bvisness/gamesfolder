@@ -32,7 +32,9 @@ GameState :: struct {
 	board_size: [2]int,
 	board:      []Cell,
 	generated:  bool,
+	win_state:  WinState,
 }
+game_state := GameState{}
 
 CellProperty :: enum {
 	REVEALED, // whether the player has revealed the cell
@@ -43,7 +45,11 @@ CellProperty :: enum {
 
 Cell :: bit_set[CellProperty;u8]
 
-game_state := GameState{}
+WinState :: enum {
+	IN_PROGRESS,
+	WIN,
+	LOSE,
+}
 
 get_board_rect :: proc() -> sdl3.FRect {
 	return sdl3.FRect{20, 20, f32(ctx.window_size.x) - 20 * 2, f32(ctx.window_size.y) - 20 * 2}
@@ -108,11 +114,16 @@ reveal :: proc(row, col: int) {
 	}
 	cell^ += {.REVEALED}
 
-	num_mines := count_mines(row, col)
-	if num_mines == 0 {
-		for roff in -1 ..= 1 {
-			for coff in -1 ..= 1 {
-				reveal(row + roff, col + coff)
+	if .MINE in cell {
+		// kerblam!
+		game_state.win_state = .LOSE
+	} else {
+		num_mines := count_mines(row, col)
+		if num_mines == 0 {
+			for roff in -1 ..= 1 {
+				for coff in -1 ..= 1 {
+					reveal(row + roff, col + coff)
+				}
 			}
 		}
 	}
@@ -383,7 +394,7 @@ draw :: proc() {
 			}
 
 			hover, active, clicked := false, false, 0
-			if .REVEALED not_in cell {
+			if game_state.win_state == .IN_PROGRESS && .REVEALED not_in cell {
 				hover, active, clicked = check_hotness(id, rect)
 			}
 			if hover &&
@@ -424,6 +435,8 @@ draw :: proc() {
 				render_texture(active ? &button_active : &button, &rect)
 				if .FLAG in cell {
 					render_texture(&flag, &nrect)
+				} else if .MINE in cell && game_state.win_state == .LOSE {
+					render_texture(&mine, &nrect)
 				} else if .QUESTION in cell {
 					render_texture(&question, &nrect)
 				}
