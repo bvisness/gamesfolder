@@ -216,6 +216,7 @@ CTX :: struct {
 	// Timing
 	t:                f64,
 	dt:               f64,
+	dirty:            bool,
 
 	// Input
 	mouse_pos:        sdl3.FPoint,
@@ -339,6 +340,7 @@ check_hotness :: proc(id: string, rect: sdl3.FRect) -> (hover: bool, active: boo
 		}
 		if sdl3.PointInRectFloat(ctx.mouse_pos, release_rect) {
 			if ctx.mouse_released[ctx.hot_mouse_button] {
+				ctx.dirty = true
 				return false, false, ctx.hot_mouse_button
 			} else {
 				return true, true, 0
@@ -505,12 +507,17 @@ loop :: proc() {
 	}
 
 	for !ctx.should_close {
-		// Wait for events, then process them all
 		e: sdl3.Event
-		if !sdl3.WaitEvent(&e) {
-			panic("failed sdl3.WaitEvent")
+		if ctx.dirty {
+			// Just do a frame right away (but only one)
+			ctx.dirty = false
+		} else {
+			// Wait for events, then process them all
+			if !sdl3.WaitEvent(&e) {
+				panic("failed sdl3.WaitEvent")
+			}
+			process_event(&e)
 		}
-		process_event(&e)
 		for sdl3.PollEvent(&e) {
 			process_event(&e)
 		}
