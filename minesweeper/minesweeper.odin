@@ -427,24 +427,37 @@ draw :: proc() {
 
 	render_texture(&background, get_window_rect())
 
-	face := &face_normal
-	if game_state.win_state == .WIN {
-		face = &face_win
-	} else if game_state.win_state == .LOSE {
-		face = &face_lose
-	} else if strings.has_prefix(ctx.hot_item, "cell") && ctx.hot_mouse_button == MOUSE_LEFT {
-		face = &face_active
-	}
-	face_pos := [2]f32{f32(ctx.window_size.x) / 2, GAME_PADDING + FACE_BAR_HEIGHT / 2}
-	FACE_SCALE :: 0.02
-	face_rect := sdl3.FRect {
-		face_pos.x - face.rect.w * FACE_SCALE / 2,
-		face_pos.y - face.rect.h * FACE_SCALE / 2,
-		face.rect.w * FACE_SCALE,
-		face.rect.h * FACE_SCALE,
-	}
-	render_texture(face, face_rect)
+	// Render the face
+	{
+		face := &face_normal
+		if game_state.win_state == .WIN {
+			face = &face_win
+		} else if game_state.win_state == .LOSE {
+			face = &face_lose
+		} else if strings.has_prefix(ctx.hot_item, "cell") && ctx.hot_mouse_button == MOUSE_LEFT {
+			face = &face_active
+		}
+		face_pos := [2]f32{f32(ctx.window_size.x) / 2, GAME_PADDING + FACE_BAR_HEIGHT / 2}
+		FACE_SCALE :: 0.02
+		face_rect := sdl3.FRect {
+			face_pos.x - face.rect.w * FACE_SCALE / 2,
+			face_pos.y - face.rect.h * FACE_SCALE / 2,
+			face.rect.w * FACE_SCALE,
+			face.rect.h * FACE_SCALE,
+		}
+		render_texture(face, face_rect)
 
+		id := "face"
+		hover, _, clicked := check_hotness(id, face_rect)
+		if hover && ctx.mouse_pressed[MOUSE_LEFT] {
+			set_hot(id, MOUSE_LEFT)
+		}
+		if clicked == MOUSE_LEFT {
+			new_game()
+		}
+	}
+
+	// Render the board
 	board_rect := get_board_rect()
 	for c in 0 ..< game_state.board_size.x {
 		for r in 0 ..< game_state.board_size.y {
@@ -470,6 +483,10 @@ draw :: proc() {
 			if game_state.win_state == .IN_PROGRESS && .REVEALED not_in cell {
 				hover, active, clicked = check_hotness(id, rect)
 			}
+			if ctx.hot_mouse_button == MOUSE_RIGHT {
+				active = false
+			}
+
 			if hover &&
 			   ctx.mouse_pressed[MOUSE_LEFT] &&
 			   .FLAG not_in cell &&
@@ -477,8 +494,6 @@ draw :: proc() {
 				hover, active = set_hot(id, MOUSE_LEFT)
 			} else if hover && ctx.mouse_pressed[MOUSE_RIGHT] {
 				set_hot(id, MOUSE_RIGHT)
-				hover = false // I don't want to render the active state for right clicks
-				active = false
 			}
 			if clicked == MOUSE_LEFT && .REVEALED not_in cell {
 				if !game_state.generated {
