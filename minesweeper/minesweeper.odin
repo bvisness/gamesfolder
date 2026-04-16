@@ -12,6 +12,9 @@ import "core:strings"
 
 import "vendor:sdl3"
 
+GAME_PADDING :: 20
+FACE_BAR_HEIGHT :: 50
+
 BUTTON_SIZE :: 36
 BUTTON_PADDING :: 4
 MAX_ROWS, MAX_COLS :: 20, 40
@@ -51,8 +54,17 @@ WinState :: enum {
 	LOSE,
 }
 
+get_window_rect :: proc() -> sdl3.FRect {
+	return sdl3.FRect{0, 0, f32(ctx.window_size.x), f32(ctx.window_size.y)}
+}
+
 get_board_rect :: proc() -> sdl3.FRect {
-	return sdl3.FRect{20, 20, f32(ctx.window_size.x) - 20 * 2, f32(ctx.window_size.y) - 20 * 2}
+	return sdl3.FRect {
+		GAME_PADDING,
+		GAME_PADDING + FACE_BAR_HEIGHT + GAME_PADDING,
+		f32(ctx.window_size.x) - GAME_PADDING * 2,
+		f32(ctx.window_size.y) - GAME_PADDING * 3 - FACE_BAR_HEIGHT,
+	}
 }
 
 new_game :: proc() {
@@ -129,6 +141,23 @@ reveal :: proc(row, col: int) {
 	}
 }
 
+check_win :: proc() {
+	// The game is won when all non-mine cells are revealed, and all mine cells are flagged.
+	all_revealed := true
+	all_flagged := true
+	for &cell in game_state.board {
+		if .MINE not_in cell && .REVEALED not_in cell {
+			all_revealed = false
+		}
+		if .MINE in cell && .FLAG not_in cell {
+			all_flagged = false
+		}
+	}
+	if all_revealed && all_flagged {
+		game_state.win_state = .WIN
+	}
+}
+
 // ----------------------------------------------------------------------------
 // Textures
 
@@ -152,17 +181,22 @@ Texture :: struct {
 button := Texture {
 	mode        = .NINESLICE,
 	src         = sdl3.FRect{210, 1183, 523 - 210, 1496 - 1183},
-	slices      = {272, 460, 1251, 1435},
+	slices      = {62, 63, 68, 61},
 	slice_scale = 0.05,
 }
 button_active := Texture {
 	mode        = .NINESLICE,
 	src         = sdl3.FRect{210, 1533, 523 - 210, 1846 - 1533},
-	slices      = {272, 460, 1601, 1785},
+	slices      = {62, 63, 68, 61},
 	slice_scale = 0.05,
 }
 empty_cell := Texture {
 	src = sdl3.FRect{215, 1888, 521 - 215, 2192 - 1888},
+}
+background := Texture {
+	mode        = .NINESLICE_TILED,
+	src         = sdl3.FRect{234, 1904, 506 - 234, 2176 - 1904},
+	slice_scale = 0.2,
 }
 
 numbers := []Texture {
@@ -184,6 +218,19 @@ question := Texture {
 }
 mine := Texture {
 	src = sdl3.FRect{820, 1034, 200, 200},
+}
+
+face_normal := Texture {
+	src = sdl3.FRect{1533, 303, 1823 - 1533, 586 - 303},
+}
+face_active := Texture {
+	src = sdl3.FRect{1979, 298, 2306 - 1979, 573 - 298},
+}
+face_win := Texture {
+	src = sdl3.FRect{1512, 676, 1812 - 1512, 963 - 676},
+}
+face_lose := Texture {
+	src = sdl3.FRect{1994, 656, 2320 - 1994, 998 - 656},
 }
 
 // ----------------------------------------------------------------------------
@@ -271,9 +318,14 @@ init_sdl :: proc() -> (ok: bool) {
 		&button,
 		&button_active,
 		&empty_cell,
+		&background,
 		&flag,
 		&question,
 		&mine,
+		&face_normal,
+		&face_active,
+		&face_win,
+		&face_lose,
 	)
 
 	return true
@@ -337,6 +389,7 @@ set_hot :: proc(id: string, hot_mouse_button: int) -> (hover: bool, active: bool
 	ctx.hot_mouse_button = hot_mouse_button
 	log.infof("NOW HOT: %s, btn %d", ctx.hot_item, ctx.hot_mouse_button)
 
+	ctx.dirty = true
 	return true, true
 }
 
@@ -371,6 +424,26 @@ check_hotness :: proc(id: string, rect: sdl3.FRect) -> (hover: bool, active: boo
 draw :: proc() {
 	sdl3.SetRenderDrawColor(ctx.renderer, 255, 255, 255, 255)
 	sdl3.RenderClear(ctx.renderer)
+
+	render_texture(&background, get_window_rect())
+
+	face := &face_normal
+	if game_state.win_state == .WIN {
+		face = &face_win
+	} else if game_state.win_state == .LOSE {
+		face = &face_lose
+	} else if strings.has_prefix(ctx.hot_item, "cell") && ctx.hot_mouse_button == MOUSE_LEFT {
+		face = &face_active
+	}
+	face_pos := [2]f32{f32(ctx.window_size.x) / 2, GAME_PADDING + FACE_BAR_HEIGHT / 2}
+	FACE_SCALE :: 0.02
+	face_rect := sdl3.FRect {
+		face_pos.x - face.rect.w * FACE_SCALE / 2,
+		face_pos.y - face.rect.h * FACE_SCALE / 2,
+		face.rect.w * FACE_SCALE,
+		face.rect.h * FACE_SCALE,
+	}
+	render_texture(face, face_rect)
 
 	board_rect := get_board_rect()
 	for c in 0 ..< game_state.board_size.x {
@@ -424,21 +497,21 @@ draw :: proc() {
 			}
 
 			if .REVEALED in cell {
-				render_texture(&empty_cell, &rect)
+				render_texture(&empty_cell, rect)
 				if .MINE in cell {
-					render_texture(&mine, &nrect)
+					render_texture(&mine, nrect)
 				} else if num_mines > 0 {
 					num := numbers[num_mines - 1]
-					render_texture(&num, &nrect)
+					render_texture(&num, nrect)
 				}
 			} else {
-				render_texture(active ? &button_active : &button, &rect)
+				render_texture(active ? &button_active : &button, rect)
 				if .FLAG in cell {
-					render_texture(&flag, &nrect)
+					render_texture(&flag, nrect)
 				} else if .MINE in cell && game_state.win_state == .LOSE {
-					render_texture(&mine, &nrect)
+					render_texture(&mine, nrect)
 				} else if .QUESTION in cell {
-					render_texture(&question, &nrect)
+					render_texture(&question, nrect)
 				}
 			}
 		}
@@ -447,9 +520,10 @@ draw :: proc() {
 	sdl3.RenderPresent(ctx.renderer)
 }
 
-render_texture :: proc(texture: ^Texture, dst: ^sdl3.FRect) {
+render_texture :: proc(texture: ^Texture, dst: sdl3.FRect) {
 	assert(texture.tex != nil, "texture was not loaded!")
 	src: Maybe(^sdl3.FRect)
+	dst := dst
 	if _, ok := texture.src.?; ok {
 		src = &texture.src.?
 	}
@@ -460,32 +534,30 @@ render_texture :: proc(texture: ^Texture, dst: ^sdl3.FRect) {
 
 	switch texture.mode {
 	case .NORMAL:
-		sdl3.RenderTexture(ctx.renderer, texture.tex, src, dst)
+		sdl3.RenderTexture(ctx.renderer, texture.tex, src, &dst)
 	case .NINESLICE:
-		src_rect := texture.src.? or_else texture.rect
 		sdl3.RenderTexture9Grid(
 			ctx.renderer,
 			texture.tex,
 			src,
-			texture.slices[0] - src_rect.x,
-			(src_rect.x + src_rect.w) - texture.slices[1],
-			texture.slices[2] - src_rect.y,
-			(src_rect.y + src_rect.h) - texture.slices[3],
+			texture.slices[0],
+			texture.slices[1],
+			texture.slices[2],
+			texture.slices[3],
 			scale,
-			dst,
+			&dst,
 		)
 	case .NINESLICE_TILED:
-		src_rect := texture.src.? or_else texture.rect
 		sdl3.RenderTexture9GridTiled(
 			ctx.renderer,
 			texture.tex,
 			src,
-			texture.slices[0] - src_rect.x,
-			(src_rect.x + src_rect.w) - texture.slices[1],
-			texture.slices[2] - src_rect.y,
-			(src_rect.y + src_rect.h) - texture.slices[3],
+			texture.slices[0],
+			texture.slices[1],
+			texture.slices[2],
+			texture.slices[3],
 			scale,
-			dst,
+			&dst,
 			scale,
 		)
 	case:
@@ -558,6 +630,7 @@ process_event :: proc(e: ^sdl3.Event) {
 
 frame :: proc(do_input: bool) {
 	draw()
+	check_win()
 
 	new_t := f64(sdl3.GetTicksNS()) / 1_000_000_000
 	ctx.dt = new_t - ctx.t
