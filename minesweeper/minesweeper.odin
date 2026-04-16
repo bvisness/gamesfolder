@@ -2,6 +2,7 @@ package minesweeper
 
 import "base:intrinsics"
 import "base:runtime"
+import "core:fmt"
 import "core:log"
 import "core:math/rand"
 import "core:mem"
@@ -15,6 +16,11 @@ BUTTON_SIZE :: 36
 BUTTON_PADDING :: 4
 MAX_ROWS, MAX_COLS :: 20, 40
 
+// This is just what SDL does I guess
+MOUSE_LEFT :: 1
+MOUSE_RIGHT :: 3
+CLICK_RELEASE_RADIUS :: 20
+
 // ----------------------------------------------------------------------------
 // Game logic
 
@@ -25,6 +31,7 @@ game_allocator: runtime.Allocator
 GameState :: struct {
 	board_size: [2]int,
 	board:      []Cell,
+	generated:  bool,
 }
 
 CellProperty :: enum {
@@ -52,13 +59,21 @@ new_game :: proc() {
 	game_state = GameState {
 		board_size = {ncols, nrows},
 		board      = make([]Cell, nrows * ncols, game_allocator),
+		generated  = false,
 	}
+}
 
-	for &cell in game_state.board {
-		if rand.float32() > 0.75 {
-			cell += {.MINE}
+generate_board :: proc(start_r, start_c: int) {
+	for r in 0 ..< game_state.board_size.y {
+		for c in 0 ..< game_state.board_size.x {
+			cell := get_cell(r, c)
+			close_to_start := abs(r - start_r) <= 1 && abs(c - start_c) <= 1
+			if rand.float32() > 0.8 && !close_to_start {
+				cell^ += {.MINE}
+			}
 		}
 	}
+	game_state.generated = true
 }
 
 get_cell :: proc(row, col: int) -> ^Cell {
@@ -69,10 +84,6 @@ count_mines :: proc(row, col: int) -> int {
 	num_mines := 0
 	for roff in -1 ..= 1 {
 		for coff in -1 ..= 1 {
-			if roff == 0 && coff == 0 {
-				continue
-			}
-
 			r := row + roff
 			c := col + coff
 			row_ok := 0 <= r && r < game_state.board_size.y
@@ -82,8 +93,29 @@ count_mines :: proc(row, col: int) -> int {
 			}
 		}
 	}
-	assert(0 <= num_mines && num_mines <= 8)
+	assert(0 <= num_mines && num_mines <= 9)
 	return num_mines
+}
+
+reveal :: proc(row, col: int) {
+	if (row < 0 || game_state.board_size.y <= row) || (col < 0 || game_state.board_size.x <= col) {
+		return
+	}
+	cell := get_cell(row, col)
+
+	if .REVEALED in cell {
+		return
+	}
+	cell^ += {.REVEALED}
+
+	num_mines := count_mines(row, col)
+	if num_mines == 0 {
+		for roff in -1 ..= 1 {
+			for coff in -1 ..= 1 {
+				reveal(row + roff, col + coff)
+			}
+		}
+	}
 }
 
 // ----------------------------------------------------------------------------
@@ -111,6 +143,15 @@ button := Texture {
 	src         = sdl3.FRect{210, 1183, 523 - 210, 1496 - 1183},
 	slices      = {272, 460, 1251, 1435},
 	slice_scale = 0.05,
+}
+button_active := Texture {
+	mode        = .NINESLICE,
+	src         = sdl3.FRect{210, 1533, 523 - 210, 1846 - 1533},
+	slices      = {272, 460, 1601, 1785},
+	slice_scale = 0.05,
+}
+empty_cell := Texture {
+	src = sdl3.FRect{215, 1888, 521 - 215, 2192 - 1888},
 }
 
 numbers := []Texture {
@@ -165,16 +206,27 @@ must1 :: proc(val: $T, err: $E, msg: string, args: ..any, location := #caller_lo
 // Loading & initialization
 
 CTX :: struct {
-	window:       ^sdl3.Window,
-	renderer:     ^sdl3.Renderer,
-	should_close: bool,
+	window:           ^sdl3.Window,
+	renderer:         ^sdl3.Renderer,
+	should_close:     bool,
 
 	// Size
-	window_size:  [2]i32,
+	window_size:      [2]i32,
 
 	// Timing
-	t:            f64,
-	dt:           f64,
+	t:                f64,
+	dt:               f64,
+
+	// Input
+	mouse_pos:        sdl3.FPoint,
+	mouse_down:       [10]bool,
+	mouse_pressed:    [10]bool,
+	mouse_released:   [10]bool,
+
+	// UI state
+	hot_item_buf:     [256]byte,
+	hot_item:         string,
+	hot_mouse_button: int,
 }
 ctx := CTX{}
 
@@ -202,7 +254,15 @@ init_sdl :: proc() -> (ok: bool) {
 	}
 
 	load_texture_slice_from_png("resources/minesweeper.png", &numbers)
-	load_textures_from_png("resources/minesweeper.png", &button, &flag, &question, &mine)
+	load_textures_from_png(
+		"resources/minesweeper.png",
+		&button,
+		&button_active,
+		&empty_cell,
+		&flag,
+		&question,
+		&mine,
+	)
 
 	return true
 }
@@ -253,6 +313,46 @@ load_texture_slice_from_png :: proc(path: string, textures: ^[]Texture) {
 }
 
 // ----------------------------------------------------------------------------
+// UI state
+
+set_hot :: proc(id: string, hot_mouse_button: int) -> (hover: bool, active: bool) {
+	if ctx.hot_item != "" {
+		return false, false
+	}
+
+	copy_from_string(ctx.hot_item_buf[:], id)
+	ctx.hot_item = string(ctx.hot_item_buf[:len(id)])
+	ctx.hot_mouse_button = hot_mouse_button
+	log.infof("NOW HOT: %s, btn %d", ctx.hot_item, ctx.hot_mouse_button)
+
+	return true, true
+}
+
+check_hotness :: proc(id: string, rect: sdl3.FRect) -> (hover: bool, active: bool, clicked: int) {
+	// If the item is "hot", meaning currently under interaction
+	if ctx.hot_item == id {
+		release_rect := sdl3.FRect {
+			rect.x - CLICK_RELEASE_RADIUS,
+			rect.y - CLICK_RELEASE_RADIUS,
+			rect.w + 2 * CLICK_RELEASE_RADIUS,
+			rect.h + 2 * CLICK_RELEASE_RADIUS,
+		}
+		if sdl3.PointInRectFloat(ctx.mouse_pos, release_rect) {
+			if ctx.mouse_released[ctx.hot_mouse_button] {
+				return false, false, ctx.hot_mouse_button
+			} else {
+				return true, true, 0
+			}
+		}
+		return false, false, 0
+	}
+
+	// Otherwise, maybe just hover
+	hovered := sdl3.PointInRectFloat(ctx.mouse_pos, rect)
+	return hovered, false, 0
+}
+
+// ----------------------------------------------------------------------------
 // Rendering
 
 draw :: proc() {
@@ -262,6 +362,8 @@ draw :: proc() {
 	board_rect := get_board_rect()
 	for c in 0 ..< game_state.board_size.x {
 		for r in 0 ..< game_state.board_size.y {
+			id := fmt.tprintf("cell:%d,%d", r, c)
+
 			cell := get_cell(r, c)
 			num_mines := count_mines(r, c)
 
@@ -278,18 +380,52 @@ draw :: proc() {
 				rect.h - BUTTON_PADDING * 2,
 			}
 
+			hover, active, clicked := false, false, 0
 			if .REVEALED not_in cell {
-				render_texture(&button, &rect)
+				hover, active, clicked = check_hotness(id, rect)
+			}
+			if hover &&
+			   ctx.mouse_pressed[MOUSE_LEFT] &&
+			   .FLAG not_in cell &&
+			   .QUESTION not_in cell {
+				hover, active = set_hot(id, MOUSE_LEFT)
+			} else if hover && ctx.mouse_pressed[MOUSE_RIGHT] {
+				set_hot(id, MOUSE_RIGHT)
+				hover = false // I don't want to render the active state for right clicks
+				active = false
+			}
+			if clicked == MOUSE_LEFT && .REVEALED not_in cell {
+				if !game_state.generated {
+					generate_board(r, c)
+				}
+				reveal(r, c)
+			} else if clicked == MOUSE_RIGHT {
+				if .FLAG in cell {
+					cell^ -= {.FLAG}
+					cell^ += {.QUESTION}
+				} else if .QUESTION in cell {
+					cell^ -= {.QUESTION}
+				} else {
+					cell^ += {.FLAG}
+				}
 			}
 
-			// if .REVEALED in cell {
-			if .MINE in cell {
-				render_texture(&mine, &nrect)
-			} else if num_mines > 0 {
-				num := numbers[num_mines - 1]
-				render_texture(&num, &nrect)
+			if .REVEALED in cell {
+				render_texture(&empty_cell, &rect)
+				if .MINE in cell {
+					render_texture(&mine, &nrect)
+				} else if num_mines > 0 {
+					num := numbers[num_mines - 1]
+					render_texture(&num, &nrect)
+				}
+			} else {
+				render_texture(active ? &button_active : &button, &rect)
+				if .FLAG in cell {
+					render_texture(&flag, &nrect)
+				} else if .QUESTION in cell {
+					render_texture(&question, &nrect)
+				}
 			}
-			// }
 		}
 	}
 
@@ -387,6 +523,12 @@ process_event :: proc(e: ^sdl3.Event) {
 	#partial switch (e.type) {
 	case .QUIT:
 		ctx.should_close = true
+	case .MOUSE_BUTTON_DOWN, .MOUSE_BUTTON_UP:
+		ctx.mouse_pressed[e.button.button] = !ctx.mouse_down[e.button.button] && e.button.down
+		ctx.mouse_released[e.button.button] = ctx.mouse_down[e.button.button] && !e.button.down
+		ctx.mouse_down[e.button.button] = e.button.down
+	case .MOUSE_MOTION:
+		ctx.mouse_pos = {e.motion.x, e.motion.y}
 	case .WINDOW_RESIZED:
 		sdl3.GetWindowSize(ctx.window, &ctx.window_size.x, &ctx.window_size.y)
 		new_game()
@@ -400,6 +542,18 @@ frame :: proc(do_input: bool) {
 	new_t := f64(sdl3.GetTicksNS()) / 1_000_000_000
 	ctx.dt = new_t - ctx.t
 	ctx.t = new_t
+
+	// Clear out frame-ephemeral state
+	if ctx.mouse_released[ctx.hot_mouse_button] {
+		ctx.hot_item = ""
+		ctx.hot_mouse_button = 0
+	}
+	for &pressed in ctx.mouse_pressed {
+		pressed = false
+	}
+	for &released in ctx.mouse_released {
+		released = false
+	}
 }
 
 // ----------------------------------------------------------------------------
