@@ -24,6 +24,41 @@ CLICK_RELEASE_RADIUS :: 20
 // ----------------------------------------------------------------------------
 // Game logic
 
+Suit :: enum u8 {
+	CLUBS = 1,
+	SPADES,
+	DIAMONDS,
+	HEARTS,
+}
+
+Card :: struct {
+	number: u8, // 0 is invalid, 1 = A, 2 = 2, etc.
+	suit:   Suit,
+}
+
+GameState :: struct {
+	deck:         []Card,
+	current_card: int, // TODO: Temporary for visualizing cards
+}
+game_state := GameState{}
+
+deck_buf: [52]Card
+init_game :: proc() {
+	game_state.deck = deck_buf[:]
+
+	i := 0
+	for suit in 1 ..= 4 {
+		for n in 1 ..= 13 {
+			game_state.deck[i] = Card{u8(n), Suit(suit)}
+			i += 1
+		}
+	}
+}
+
+suit_is_red :: #force_inline proc(s: Suit) -> bool {
+	return s == .DIAMONDS || s == .HEARTS
+}
+
 // ----------------------------------------------------------------------------
 // Textures
 
@@ -36,7 +71,7 @@ TextureDrawMode :: enum {
 Texture :: struct {
 	mode:        TextureDrawMode,
 	src:         Maybe(sdl3.FRect),
-	slices:      [4]f32, // left, right, top, bottom, relative to original img
+	slices:      [4]f32, // left, right, top, bottom
 	slice_scale: f32,
 
 	// Filled in when loading
@@ -65,11 +100,128 @@ texture_grid :: proc "contextless" (
 	return
 }
 
+t_card := Texture {
+	mode        = .NINESLICE,
+	src         = sdl3.FRect{250, 250, 410, 620},
+	slices      = {65, 65, 65, 65},
+	slice_scale = 0.4,
+}
 t_clubs := texture_grid(4, Texture{}, {850, 250}, {1230 - 1054, 642 - 449}, {200, 200}, 2)
 t_spades := texture_grid(4, Texture{}, {1300, 250}, {150, 195}, {200, 250}, 2)
 t_diamonds := texture_grid(4, Texture{}, {1750, 250}, {150, 200}, {150, 250}, 2)
 t_hearts := texture_grid(4, Texture{}, {2150, 250}, {170, 170}, {200, 200}, 2)
 t_numbers := texture_grid(26, Texture{}, {850, 750}, {145, 200}, {150, 250}, 13)
+t_face := texture_grid(6, Texture{}, {850, 1300}, {415, 610}, {450, 650}, 3)
+
+load_textures :: proc() {
+	load_textures_from_png("resources/solitaire.png", &t_card)
+	load_texture_slice_from_png(
+		"resources/solitaire.png",
+		t_clubs[:],
+		t_spades[:],
+		t_diamonds[:],
+		t_hearts[:],
+		t_numbers[:],
+		t_face[:],
+	)
+}
+
+card_tnum :: proc(c: ^Card) -> ^Texture {
+	assert(1 <= c.number && c.number <= 13)
+	n := c.number - 1
+	return &t_numbers[(suit_is_red(c.suit) ? 13 : 0) + n]
+}
+
+card_tsuit :: proc(c: ^Card, variant: int) -> ^Texture {
+	assert(0 < u8(c.suit) && u8(c.suit) <= 4)
+	assert(0 <= variant && variant < 4)
+	suits := [4]^[4]Texture{&t_clubs, &t_spades, &t_diamonds, &t_hearts}
+	suit := suits[u8(c.suit) - 1]
+	return &suit[variant]
+}
+
+card_tface :: proc(c: ^Card) -> ^Texture {
+	assert(11 <= c.number && c.number <= 13)
+	n := c.number - 11
+	return &t_face[(suit_is_red(c.suit) ? 3 : 0) + n]
+}
+
+PipInfo :: struct {
+	col:         u8,
+	row:         u8,
+	upside_down: bool,
+}
+
+pip_nrows := []int {
+	0, // invalid
+	0, // A, invalid
+	2, // 2
+	3, // 3
+	2, // 4
+	3, // 5
+	3, // 6
+	5, // 7
+	5, // 8
+	7, // 9
+	7, // 10
+	0, // J, invalid
+	0, // Q, invalid
+	0, // K, invalid
+}
+pip_specs := [][]PipInfo {
+	{}, // invalid
+	{}, // A, invalid
+	{{1, 0, false}, {1, 1, true}}, // 2
+	{{1, 0, false}, {1, 1, false}, {1, 2, true}}, // 3
+	{{0, 0, false}, {2, 0, false}, {0, 1, true}, {2, 1, true}}, // 4
+	{{0, 0, false}, {2, 0, false}, {0, 2, true}, {2, 2, true}, {1, 1, false}}, // 5
+	{{0, 0, false}, {0, 1, false}, {0, 2, true}, {2, 0, false}, {2, 1, false}, {2, 2, true}}, // 6
+	{
+		{0, 0, false},
+		{0, 2, false},
+		{0, 4, true},
+		{2, 0, false},
+		{2, 2, false},
+		{2, 4, true},
+		{1, 1, false},
+	}, // 7
+	{
+		{0, 0, false},
+		{0, 2, false},
+		{0, 4, true},
+		{2, 0, false},
+		{2, 2, false},
+		{2, 4, true},
+		{1, 1, false},
+		{1, 3, true},
+	}, // 8
+	{
+		{0, 0, false},
+		{0, 2, false},
+		{0, 4, true},
+		{0, 6, true},
+		{2, 0, false},
+		{2, 2, false},
+		{2, 4, true},
+		{2, 6, true},
+		{1, 3, false},
+	}, // 9
+	{
+		{0, 0, false},
+		{0, 2, false},
+		{0, 4, true},
+		{0, 6, true},
+		{2, 0, false},
+		{2, 2, false},
+		{2, 4, true},
+		{2, 6, true},
+		{1, 1, false},
+		{1, 5, true},
+	}, // 10
+	{}, // J, invalid
+	{}, // Q, invalid
+	{}, // K, invalid
+}
 
 // ----------------------------------------------------------------------------
 // Utilities
@@ -96,6 +248,14 @@ must1 :: proc(val: $T, err: $E, msg: string, args: ..any, location := #caller_lo
 		intrinsics.debug_trap()
 	}
 	return val
+}
+
+rect_xy :: proc(r: sdl3.FRect) -> [2]f32 {
+	return {r.x, r.y}
+}
+
+rect_wh :: #force_inline proc(r: sdl3.FRect) -> [2]f32 {
+	return {r.x, r.y}
 }
 
 // ----------------------------------------------------------------------------
@@ -149,15 +309,6 @@ init_sdl :: proc() -> (ok: bool) {
 		log.errorf("sdl3.CreateWindowAndRenderer failed.")
 		return false
 	}
-
-	load_texture_slice_from_png(
-		"resources/solitaire.png",
-		t_clubs[:],
-		t_spades[:],
-		t_diamonds[:],
-		t_hearts[:],
-		t_numbers[:],
-	)
 
 	return true
 }
@@ -260,38 +411,75 @@ check_hotness :: proc(id: string, rect: sdl3.FRect) -> (hover: bool, active: boo
 // ----------------------------------------------------------------------------
 // Rendering
 
+card_variant := 0
+
+next_variant :: proc() -> int {
+	res := card_variant
+	card_variant = (card_variant + 1) % 4
+	return res
+}
+
 draw :: proc() {
-	sdl3.SetRenderDrawColor(ctx.renderer, 255, 255, 255, 255)
+	sdl3.SetRenderDrawColor(ctx.renderer, 19, 127, 49, 255)
 	sdl3.RenderClear(ctx.renderer)
 
-	SCALE :: 0.4
-	render_texture_pos(&t_clubs[0], {10, 10}, SCALE)
-	render_texture_pos(&t_clubs[1], {110, 10}, SCALE)
-	render_texture_pos(&t_clubs[2], {210, 10}, SCALE)
-	render_texture_pos(&t_clubs[3], {310, 10}, SCALE)
-	render_texture_pos(&t_spades[0], {10, 110}, SCALE)
-	render_texture_pos(&t_spades[1], {110, 110}, SCALE)
-	render_texture_pos(&t_spades[2], {210, 110}, SCALE)
-	render_texture_pos(&t_spades[3], {310, 110}, SCALE)
-	render_texture_pos(&t_diamonds[0], {10, 210}, SCALE)
-	render_texture_pos(&t_diamonds[1], {110, 210}, SCALE)
-	render_texture_pos(&t_diamonds[2], {210, 210}, SCALE)
-	render_texture_pos(&t_diamonds[3], {310, 210}, SCALE)
-	render_texture_pos(&t_hearts[0], {10, 310}, SCALE)
-	render_texture_pos(&t_hearts[1], {110, 310}, SCALE)
-	render_texture_pos(&t_hearts[2], {210, 310}, SCALE)
-	render_texture_pos(&t_hearts[3], {310, 310}, SCALE)
+	card := &game_state.deck[game_state.current_card]
+	log.infof("Current card: %v\n", card)
 
-	for r in 0 ..= 1 {
-		for n in 0 ..< 13 {
-			render_texture_pos(&t_numbers[r * 13 + n], {10 + 40 * f32(n), 410 + 60 * f32(r)}, 0.2)
+	CARD_SIZE :: [2]f32{300, 400}
+	card_variant = 0
+	card_pos := [2]f32{10, 10}
+	card_rect := sdl3.FRect{card_pos.x, card_pos.y, CARD_SIZE.x, CARD_SIZE.y}
+	card_center := [2]f32{card_rect.x + card_rect.w / 2, card_rect.y + card_rect.h / 2}
+
+	render_texture(&t_card, card_rect)
+	render_texture_pos_centered(card_tnum(card), card_pos + {30, 45}, 0.2)
+	render_texture_pos_centered(card_tsuit(card, next_variant()), card_pos + {30, 85}, 0.15)
+	render_texture_pos_centered(card_tnum(card), card_pos + CARD_SIZE - {30, 45}, 0.2, true)
+	render_texture_pos_centered(
+		card_tsuit(card, next_variant()),
+		card_pos + CARD_SIZE - {30, 85},
+		0.15,
+		true,
+	)
+	if card.number == 1 {
+		render_texture_pos_centered(card_tsuit(card, next_variant()), card_center, 0.4)
+	} else if 2 <= card.number && card.number <= 10 {
+		nrows := pip_nrows[card.number]
+		pip_spec := pip_specs[card.number]
+
+		PIP_INSET_X, PIP_INSET_Y :: 84, 80
+		pip_rect := sdl3.FRect {
+			card_rect.x + PIP_INSET_X,
+			card_rect.y + PIP_INSET_Y,
+			card_rect.w - PIP_INSET_X * 2,
+			card_rect.h - PIP_INSET_Y * 2,
 		}
+		col_width := pip_rect.w / (3 - 1)
+		row_height := pip_rect.h / (f32(nrows) - 1)
+
+		for pip in pip_spec {
+			pip_pos := [2]f32 {
+				pip_rect.x + f32(pip.col) * col_width,
+				pip_rect.y + f32(pip.row) * row_height,
+			}
+			render_texture_pos_centered(
+				card_tsuit(card, next_variant()),
+				pip_pos,
+				0.4,
+				pip.upside_down,
+			)
+		}
+	} else if 11 <= card.number && card.number <= 13 {
+		render_texture_pos_centered(card_tface(card), card_center, 0.5)
+	} else {
+		trapf("invalid card number %v", card.number)
 	}
 
 	sdl3.RenderPresent(ctx.renderer)
 }
 
-render_texture :: proc(texture: ^Texture, dst: sdl3.FRect) {
+render_texture :: proc(texture: ^Texture, dst: sdl3.FRect, upside_down := false) {
 	assert(texture.tex != nil, "texture was not loaded!")
 	src: Maybe(^sdl3.FRect)
 	dst := dst
@@ -305,7 +493,11 @@ render_texture :: proc(texture: ^Texture, dst: sdl3.FRect) {
 
 	switch texture.mode {
 	case .NORMAL:
-		sdl3.RenderTexture(ctx.renderer, texture.tex, src, &dst)
+		if upside_down {
+			sdl3.RenderTextureRotated(ctx.renderer, texture.tex, src, &dst, 180, nil, .NONE)
+		} else {
+			sdl3.RenderTexture(ctx.renderer, texture.tex, src, &dst)
+		}
 	case .NINESLICE:
 		sdl3.RenderTexture9Grid(
 			ctx.renderer,
@@ -337,10 +529,18 @@ render_texture :: proc(texture: ^Texture, dst: sdl3.FRect) {
 }
 
 render_texture_pos :: proc(texture: ^Texture, pos: [2]f32, scale: f32) {
-	render_texture(
-		texture,
-		sdl3.FRect{pos.x, pos.y, texture.size.x * scale, texture.size.y * scale},
-	)
+	w, h := texture.size.x * scale, texture.size.y * scale
+	render_texture(texture, sdl3.FRect{pos.x, pos.y, w, h})
+}
+
+render_texture_pos_centered :: proc(
+	texture: ^Texture,
+	pos: [2]f32,
+	scale: f32,
+	upside_down := false,
+) {
+	w, h := texture.size.x * scale, texture.size.y * scale
+	render_texture(texture, sdl3.FRect{pos.x - w / 2, pos.y - h / 2, w, h}, upside_down)
 }
 
 // ----------------------------------------------------------------------------
@@ -396,6 +596,14 @@ process_event :: proc(e: ^sdl3.Event) {
 		ctx.mouse_pressed[e.button.button] = !ctx.mouse_down[e.button.button] && e.button.down
 		ctx.mouse_released[e.button.button] = ctx.mouse_down[e.button.button] && !e.button.down
 		ctx.mouse_down[e.button.button] = e.button.down
+	case .KEY_DOWN:
+		switch e.key.key {
+		case sdl3.K_RIGHT:
+			game_state.current_card += 1
+		case sdl3.K_LEFT:
+			game_state.current_card -= 1
+		}
+		game_state.current_card = (game_state.current_card + 52) % 52
 	case .MOUSE_MOTION:
 		ctx.mouse_pos = {e.motion.x, e.motion.y}
 	case .WINDOW_RESIZED:
@@ -435,6 +643,9 @@ main :: proc() {
 		os.exit(1)
 	}
 	defer cleanup()
+
+	load_textures()
+	init_game()
 
 	loop()
 
