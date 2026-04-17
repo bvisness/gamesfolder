@@ -21,6 +21,14 @@ MOUSE_LEFT :: 1
 MOUSE_RIGHT :: 3
 CLICK_RELEASE_RADIUS :: 20
 
+// When I figured out how to lay everything out the way I liked, I used a card size of 300x400.
+// But this is too big for actual gameplay, hence CARD_SIZE is smaller. Rather than hardcode a
+// bunch of new magic numbers here, we stick with what we have and just scale them all by a
+// CARD_SCALE derived from CARD_SIZE and CARD_NOMINAL SIZE.
+CARD_SIZE :: [2]f32{150, 200}
+CARD_NOMINAL_SIZE :: [2]f32{300, 400}
+CARD_SCALE :: CARD_SIZE.x / CARD_NOMINAL_SIZE.x
+
 // ----------------------------------------------------------------------------
 // Game logic
 
@@ -104,7 +112,7 @@ t_card := Texture {
 	mode        = .NINESLICE,
 	src         = sdl3.FRect{250, 250, 410, 620},
 	slices      = {65, 65, 65, 65},
-	slice_scale = 0.4,
+	slice_scale = 0.4 * CARD_SCALE,
 }
 t_clubs := texture_grid(4, Texture{}, {850, 250}, {1230 - 1054, 642 - 449}, {200, 200}, 2)
 t_spades := texture_grid(4, Texture{}, {1300, 250}, {150, 195}, {200, 250}, 2)
@@ -426,29 +434,55 @@ draw :: proc() {
 	card := &game_state.deck[game_state.current_card]
 	log.infof("Current card: %v\n", card)
 
-	CARD_SIZE :: [2]f32{300, 400}
-	card_variant = 0
-	card_pos := [2]f32{10, 10}
-	card_rect := sdl3.FRect{card_pos.x, card_pos.y, CARD_SIZE.x, CARD_SIZE.y}
+	draw_card(card, {10, 10})
+
+	sdl3.RenderPresent(ctx.renderer)
+}
+
+draw_card :: proc(card: ^Card, card_pos: [2]f32) {
+	card_rect := sdl3.FRect {
+		card_pos.x,
+		card_pos.y,
+		CARD_NOMINAL_SIZE.x * CARD_SCALE,
+		CARD_NOMINAL_SIZE.y * CARD_SCALE,
+	}
 	card_center := [2]f32{card_rect.x + card_rect.w / 2, card_rect.y + card_rect.h / 2}
 
+	card_variant = 0
 	render_texture(&t_card, card_rect)
-	render_texture_pos_centered(card_tnum(card), card_pos + {30, 45}, 0.2)
-	render_texture_pos_centered(card_tsuit(card, next_variant()), card_pos + {30, 85}, 0.15)
-	render_texture_pos_centered(card_tnum(card), card_pos + CARD_SIZE - {30, 45}, 0.2, true)
+	render_texture_pos_centered(
+		card_tnum(card),
+		card_pos + {30, 45} * CARD_SCALE,
+		0.2 * CARD_SCALE,
+	)
 	render_texture_pos_centered(
 		card_tsuit(card, next_variant()),
-		card_pos + CARD_SIZE - {30, 85},
-		0.15,
+		card_pos + {30, 85} * CARD_SCALE,
+		0.15 * CARD_SCALE,
+	)
+	render_texture_pos_centered(
+		card_tnum(card),
+		card_pos + CARD_SIZE - {30, 45} * CARD_SCALE,
+		0.2 * CARD_SCALE,
+		true,
+	)
+	render_texture_pos_centered(
+		card_tsuit(card, next_variant()),
+		card_pos + CARD_SIZE - {30, 85} * CARD_SCALE,
+		0.15 * CARD_SCALE,
 		true,
 	)
 	if card.number == 1 {
-		render_texture_pos_centered(card_tsuit(card, next_variant()), card_center, 0.4)
+		render_texture_pos_centered(
+			card_tsuit(card, next_variant()),
+			card_center,
+			0.4 * CARD_SCALE,
+		)
 	} else if 2 <= card.number && card.number <= 10 {
 		nrows := pip_nrows[card.number]
 		pip_spec := pip_specs[card.number]
 
-		PIP_INSET_X, PIP_INSET_Y :: 84, 80
+		PIP_INSET_X, PIP_INSET_Y :: 84 * CARD_SCALE, 80 * CARD_SCALE
 		pip_rect := sdl3.FRect {
 			card_rect.x + PIP_INSET_X,
 			card_rect.y + PIP_INSET_Y,
@@ -466,17 +500,15 @@ draw :: proc() {
 			render_texture_pos_centered(
 				card_tsuit(card, next_variant()),
 				pip_pos,
-				0.4,
+				0.4 * CARD_SCALE,
 				pip.upside_down,
 			)
 		}
 	} else if 11 <= card.number && card.number <= 13 {
-		render_texture_pos_centered(card_tface(card), card_center, 0.5)
+		render_texture_pos_centered(card_tface(card), card_center, 0.5 * CARD_SCALE)
 	} else {
 		trapf("invalid card number %v", card.number)
 	}
-
-	sdl3.RenderPresent(ctx.renderer)
 }
 
 render_texture :: proc(texture: ^Texture, dst: sdl3.FRect, upside_down := false) {
