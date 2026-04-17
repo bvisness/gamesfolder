@@ -3,18 +3,14 @@ package minesweeper
 import "base:intrinsics"
 import "base:runtime"
 import "core:log"
+import "core:math/rand"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
 
 import "vendor:sdl3"
 
-GAME_PADDING :: 20
-FACE_BAR_HEIGHT :: 50
-
-BUTTON_SIZE :: 36
-BUTTON_PADDING :: 4
-MAX_ROWS, MAX_COLS :: 20, 40
+V2 :: [2]f32
 
 // This is just what SDL does I guess
 MOUSE_LEFT :: 1
@@ -25,9 +21,17 @@ CLICK_RELEASE_RADIUS :: 20
 // But this is too big for actual gameplay, hence CARD_SIZE is smaller. Rather than hardcode a
 // bunch of new magic numbers here, we stick with what we have and just scale them all by a
 // CARD_SCALE derived from CARD_SIZE and CARD_NOMINAL SIZE.
-CARD_SIZE :: [2]f32{150, 200}
-CARD_NOMINAL_SIZE :: [2]f32{300, 400}
+CARD_SIZE :: V2{150, 200}
+CARD_NOMINAL_SIZE :: V2{300, 400}
 CARD_SCALE :: CARD_SIZE.x / CARD_NOMINAL_SIZE.x
+
+GAME_PADDING :: 40
+PILE_GAP :: 20
+WINDOW_SIZE :: V2{GAME_PADDING * 2 + CARD_SIZE.x * 7 + PILE_GAP * 6, 800}
+
+DECK_POS :: V2{GAME_PADDING, GAME_PADDING}
+FOUNDATION_POS :: V2{WINDOW_SIZE.x - GAME_PADDING - CARD_SIZE.x * 4 - PILE_GAP * 3, GAME_PADDING}
+MAIN_Y :: GAME_PADDING + CARD_SIZE.y + 40
 
 // ----------------------------------------------------------------------------
 // Game logic
@@ -40,32 +44,51 @@ Suit :: enum u8 {
 }
 
 Card :: struct {
-	number: u8, // 0 is invalid, 1 = A, 2 = 2, etc.
-	suit:   Suit,
+	number:   u8, // 0 is invalid, 1 = A, 2 = 2, etc.
+	suit:     Suit,
+
+	// Rendering/animating/interpolating
+	face_up:  bool,
+	last_pos: V2,
+}
+
+Pile :: [dynamic; 52]Card
+
+Animation :: enum {
+	NONE,
+	DEAL,
+	BOUNCE,
 }
 
 GameState :: struct {
-	deck:         []Card,
-	current_card: int, // TODO: Temporary for visualizing cards
+	deck:        Pile,
+	draw_pile:   Pile,
+	stacks:      [7]Pile,
+	foundations: [4]Pile,
+
+	// Animation-related shenanigans
+	animation:   Animation,
+	num_dealt:   int,
 }
-game_state := GameState{}
+game_state: GameState
 
-deck_buf: [52]Card
 init_game :: proc() {
-	game_state.deck = deck_buf[:]
+	game_state = GameState{}
 
-	i := 0
+	// Make and shuffle the deck
 	for suit in 1 ..= 4 {
 		for n in 1 ..= 13 {
-			game_state.deck[i] = Card{u8(n), Suit(suit)}
-			i += 1
+			append(&game_state.deck, Card{number = u8(n), suit = Suit(suit), last_pos = DECK_POS})
 		}
 	}
+	rand.shuffle(game_state.deck[:])
 }
 
 suit_is_red :: #force_inline proc(s: Suit) -> bool {
 	return s == .DIAMONDS || s == .HEARTS
 }
+
+lay_out_cards :: proc() {}
 
 // ----------------------------------------------------------------------------
 // Textures
@@ -84,16 +107,16 @@ Texture :: struct {
 
 	// Filled in when loading
 	tex:         ^sdl3.Texture,
-	size:        [2]f32,
+	size:        V2,
 	full_rect:   sdl3.FRect,
 }
 
 texture_grid :: proc "contextless" (
 	$N: int,
 	template: Texture,
-	start: [2]f32,
-	size: [2]f32,
-	offset: [2]f32,
+	start: V2,
+	size: V2,
+	offset: V2,
 	per_row: int,
 ) -> (
 	res: [N]Texture,
@@ -114,6 +137,9 @@ t_card := Texture {
 	slices      = {65, 65, 65, 65},
 	slice_scale = 0.4 * CARD_SCALE,
 }
+t_card_back := Texture {
+	src = sdl3.FRect{2255, 1300, 605, 805},
+}
 t_clubs := texture_grid(4, Texture{}, {850, 250}, {1230 - 1054, 642 - 449}, {200, 200}, 2)
 t_spades := texture_grid(4, Texture{}, {1300, 250}, {150, 195}, {200, 250}, 2)
 t_diamonds := texture_grid(4, Texture{}, {1750, 250}, {150, 200}, {150, 250}, 2)
@@ -122,7 +148,7 @@ t_numbers := texture_grid(26, Texture{}, {850, 750}, {145, 200}, {150, 250}, 13)
 t_face := texture_grid(6, Texture{}, {850, 1300}, {415, 610}, {450, 650}, 3)
 
 load_textures :: proc() {
-	load_textures_from_png("resources/solitaire.png", &t_card)
+	load_textures_from_png("resources/solitaire.png", &t_card, &t_card_back)
 	load_texture_slice_from_png(
 		"resources/solitaire.png",
 		t_clubs[:],
@@ -134,13 +160,13 @@ load_textures :: proc() {
 	)
 }
 
-card_tnum :: proc(c: ^Card) -> ^Texture {
+card_tnum :: proc(c: Card) -> ^Texture {
 	assert(1 <= c.number && c.number <= 13)
 	n := c.number - 1
 	return &t_numbers[(suit_is_red(c.suit) ? 13 : 0) + n]
 }
 
-card_tsuit :: proc(c: ^Card, variant: int) -> ^Texture {
+card_tsuit :: proc(c: Card, variant: int) -> ^Texture {
 	assert(0 < u8(c.suit) && u8(c.suit) <= 4)
 	assert(0 <= variant && variant < 4)
 	suits := [4]^[4]Texture{&t_clubs, &t_spades, &t_diamonds, &t_hearts}
@@ -148,7 +174,7 @@ card_tsuit :: proc(c: ^Card, variant: int) -> ^Texture {
 	return &suit[variant]
 }
 
-card_tface :: proc(c: ^Card) -> ^Texture {
+card_tface :: proc(c: Card) -> ^Texture {
 	assert(11 <= c.number && c.number <= 13)
 	n := c.number - 11
 	return &t_face[(suit_is_red(c.suit) ? 3 : 0) + n]
@@ -258,11 +284,11 @@ must1 :: proc(val: $T, err: $E, msg: string, args: ..any, location := #caller_lo
 	return val
 }
 
-rect_xy :: proc(r: sdl3.FRect) -> [2]f32 {
+rect_xy :: proc(r: sdl3.FRect) -> V2 {
 	return {r.x, r.y}
 }
 
-rect_wh :: #force_inline proc(r: sdl3.FRect) -> [2]f32 {
+rect_wh :: #force_inline proc(r: sdl3.FRect) -> V2 {
 	return {r.x, r.y}
 }
 
@@ -308,8 +334,8 @@ init_sdl :: proc() -> (ok: bool) {
 
 	if !sdl3.CreateWindowAndRenderer(
 		"Solitaire",
-		800,
-		600,
+		i32(WINDOW_SIZE.x),
+		i32(WINDOW_SIZE.y),
 		sdl3.WindowFlags{},
 		&ctx.window,
 		&ctx.renderer,
@@ -431,84 +457,105 @@ draw :: proc() {
 	sdl3.SetRenderDrawColor(ctx.renderer, 19, 127, 49, 255)
 	sdl3.RenderClear(ctx.renderer)
 
-	card := &game_state.deck[game_state.current_card]
-	log.infof("Current card: %v\n", card)
-
-	draw_card(card, {10, 10})
+	draw_pile(&game_state.deck, DECK_POS)
 
 	sdl3.RenderPresent(ctx.renderer)
 }
 
-draw_card :: proc(card: ^Card, card_pos: [2]f32) {
+draw_card :: proc(card: Card, card_pos: V2) {
 	card_rect := sdl3.FRect {
 		card_pos.x,
 		card_pos.y,
 		CARD_NOMINAL_SIZE.x * CARD_SCALE,
 		CARD_NOMINAL_SIZE.y * CARD_SCALE,
 	}
-	card_center := [2]f32{card_rect.x + card_rect.w / 2, card_rect.y + card_rect.h / 2}
+	card_center := V2{card_rect.x + card_rect.w / 2, card_rect.y + card_rect.h / 2}
 
-	card_variant = 0
-	render_texture(&t_card, card_rect)
-	render_texture_pos_centered(
-		card_tnum(card),
-		card_pos + {30, 45} * CARD_SCALE,
-		0.2 * CARD_SCALE,
-	)
-	render_texture_pos_centered(
-		card_tsuit(card, next_variant()),
-		card_pos + {30, 85} * CARD_SCALE,
-		0.15 * CARD_SCALE,
-	)
-	render_texture_pos_centered(
-		card_tnum(card),
-		card_pos + CARD_SIZE - {30, 45} * CARD_SCALE,
-		0.2 * CARD_SCALE,
-		true,
-	)
-	render_texture_pos_centered(
-		card_tsuit(card, next_variant()),
-		card_pos + CARD_SIZE - {30, 85} * CARD_SCALE,
-		0.15 * CARD_SCALE,
-		true,
-	)
-	if card.number == 1 {
+	if card.face_up {
+		card_variant = 0
+		render_texture(&t_card, card_rect)
+		render_texture_pos_centered(
+			card_tnum(card),
+			card_pos + {30, 45} * CARD_SCALE,
+			0.2 * CARD_SCALE,
+		)
 		render_texture_pos_centered(
 			card_tsuit(card, next_variant()),
-			card_center,
-			0.4 * CARD_SCALE,
+			card_pos + {30, 85} * CARD_SCALE,
+			0.15 * CARD_SCALE,
 		)
-	} else if 2 <= card.number && card.number <= 10 {
-		nrows := pip_nrows[card.number]
-		pip_spec := pip_specs[card.number]
-
-		PIP_INSET_X, PIP_INSET_Y :: 84 * CARD_SCALE, 80 * CARD_SCALE
-		pip_rect := sdl3.FRect {
-			card_rect.x + PIP_INSET_X,
-			card_rect.y + PIP_INSET_Y,
-			card_rect.w - PIP_INSET_X * 2,
-			card_rect.h - PIP_INSET_Y * 2,
-		}
-		col_width := pip_rect.w / (3 - 1)
-		row_height := pip_rect.h / (f32(nrows) - 1)
-
-		for pip in pip_spec {
-			pip_pos := [2]f32 {
-				pip_rect.x + f32(pip.col) * col_width,
-				pip_rect.y + f32(pip.row) * row_height,
-			}
+		render_texture_pos_centered(
+			card_tnum(card),
+			card_pos + CARD_SIZE - {30, 45} * CARD_SCALE,
+			0.2 * CARD_SCALE,
+			true,
+		)
+		render_texture_pos_centered(
+			card_tsuit(card, next_variant()),
+			card_pos + CARD_SIZE - {30, 85} * CARD_SCALE,
+			0.15 * CARD_SCALE,
+			true,
+		)
+		if card.number == 1 {
 			render_texture_pos_centered(
 				card_tsuit(card, next_variant()),
-				pip_pos,
+				card_center,
 				0.4 * CARD_SCALE,
-				pip.upside_down,
 			)
+		} else if 2 <= card.number && card.number <= 10 {
+			nrows := pip_nrows[card.number]
+			pip_spec := pip_specs[card.number]
+
+			PIP_INSET_X, PIP_INSET_Y :: 84 * CARD_SCALE, 80 * CARD_SCALE
+			pip_rect := sdl3.FRect {
+				card_rect.x + PIP_INSET_X,
+				card_rect.y + PIP_INSET_Y,
+				card_rect.w - PIP_INSET_X * 2,
+				card_rect.h - PIP_INSET_Y * 2,
+			}
+			col_width := pip_rect.w / (3 - 1)
+			row_height := pip_rect.h / (f32(nrows) - 1)
+
+			for pip in pip_spec {
+				pip_pos := V2 {
+					pip_rect.x + f32(pip.col) * col_width,
+					pip_rect.y + f32(pip.row) * row_height,
+				}
+				render_texture_pos_centered(
+					card_tsuit(card, next_variant()),
+					pip_pos,
+					0.4 * CARD_SCALE,
+					pip.upside_down,
+				)
+			}
+		} else if 11 <= card.number && card.number <= 13 {
+			render_texture_pos_centered(card_tface(card), card_center, 0.5 * CARD_SCALE)
+		} else {
+			trapf("invalid card number %v", card.number)
 		}
-	} else if 11 <= card.number && card.number <= 13 {
-		render_texture_pos_centered(card_tface(card), card_center, 0.5 * CARD_SCALE)
 	} else {
-		trapf("invalid card number %v", card.number)
+		render_texture(&t_card_back, card_rect)
 	}
+}
+
+draw_pile :: proc(pile: ^Pile, pos: V2) {
+	if len(pile) == 0 {
+		return
+	}
+
+	top := pile[len(pile) - 1]
+	num_remaining := len(pile) - 1
+
+	CARDS_PER_FACEDOWN :: 5
+	FACEDOWN_BUMP_Y :: -2
+	top_y := pos.y
+	for i in 0 ..< (num_remaining + CARDS_PER_FACEDOWN - 1) / CARDS_PER_FACEDOWN {
+		bumped_y := pos.y + FACEDOWN_BUMP_Y * f32(i)
+		draw_card(Card{face_up = false}, {pos.x, bumped_y})
+		top_y = bumped_y
+	}
+
+	draw_card(top, {pos.x, top_y})
 }
 
 render_texture :: proc(texture: ^Texture, dst: sdl3.FRect, upside_down := false) {
@@ -560,17 +607,12 @@ render_texture :: proc(texture: ^Texture, dst: sdl3.FRect, upside_down := false)
 	}
 }
 
-render_texture_pos :: proc(texture: ^Texture, pos: [2]f32, scale: f32) {
+render_texture_pos :: proc(texture: ^Texture, pos: V2, scale: f32) {
 	w, h := texture.size.x * scale, texture.size.y * scale
 	render_texture(texture, sdl3.FRect{pos.x, pos.y, w, h})
 }
 
-render_texture_pos_centered :: proc(
-	texture: ^Texture,
-	pos: [2]f32,
-	scale: f32,
-	upside_down := false,
-) {
+render_texture_pos_centered :: proc(texture: ^Texture, pos: V2, scale: f32, upside_down := false) {
 	w, h := texture.size.x * scale, texture.size.y * scale
 	render_texture(texture, sdl3.FRect{pos.x - w / 2, pos.y - h / 2, w, h}, upside_down)
 }
@@ -628,14 +670,6 @@ process_event :: proc(e: ^sdl3.Event) {
 		ctx.mouse_pressed[e.button.button] = !ctx.mouse_down[e.button.button] && e.button.down
 		ctx.mouse_released[e.button.button] = ctx.mouse_down[e.button.button] && !e.button.down
 		ctx.mouse_down[e.button.button] = e.button.down
-	case .KEY_DOWN:
-		switch e.key.key {
-		case sdl3.K_RIGHT:
-			game_state.current_card += 1
-		case sdl3.K_LEFT:
-			game_state.current_card -= 1
-		}
-		game_state.current_card = (game_state.current_card + 52) % 52
 	case .MOUSE_MOTION:
 		ctx.mouse_pos = {e.motion.x, e.motion.y}
 	case .WINDOW_RESIZED:
