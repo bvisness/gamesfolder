@@ -6,5 +6,6 @@ if not exist SDL3.dll (
 )
 if not exist build mkdir build
 copy SDL3.dll build\SDL3.dll
-robocopy minesweeper\resources build\resources /MIR > nul
-odin build minesweeper\minesweeper.odin -file -debug -vet -out:build\minesweeper.exe
+
+robocopy solitaire\resources build\resources /MIR > nul
+odin build solitaire\solitaire.odin -file -debug -vet -out:build\solitaire.exe
