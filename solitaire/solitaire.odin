@@ -69,6 +69,7 @@ t_clubs := texture_grid(4, Texture{}, {850, 250}, {1230 - 1054, 642 - 449}, {200
 t_spades := texture_grid(4, Texture{}, {1300, 250}, {150, 195}, {200, 250}, 2)
 t_diamonds := texture_grid(4, Texture{}, {1750, 250}, {150, 200}, {150, 250}, 2)
 t_hearts := texture_grid(4, Texture{}, {2150, 250}, {170, 170}, {200, 200}, 2)
+t_numbers := texture_grid(26, Texture{}, {850, 750}, {145, 200}, {150, 250}, 13)
 
 // ----------------------------------------------------------------------------
 // Utilities
@@ -155,6 +156,7 @@ init_sdl :: proc() -> (ok: bool) {
 		t_spades[:],
 		t_diamonds[:],
 		t_hearts[:],
+		t_numbers[:],
 	)
 
 	return true
@@ -279,6 +281,12 @@ draw :: proc() {
 	render_texture_pos(&t_hearts[1], {110, 310}, SCALE)
 	render_texture_pos(&t_hearts[2], {210, 310}, SCALE)
 	render_texture_pos(&t_hearts[3], {310, 310}, SCALE)
+
+	for r in 0 ..= 1 {
+		for n in 0 ..< 13 {
+			render_texture_pos(&t_numbers[r * 13 + n], {10 + 40 * f32(n), 410 + 60 * f32(r)}, 0.2)
+		}
+	}
 
 	sdl3.RenderPresent(ctx.renderer)
 }
