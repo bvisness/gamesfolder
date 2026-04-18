@@ -5,7 +5,6 @@ import "base:runtime"
 import "core:fmt"
 import "core:log"
 import "core:math/rand"
-import "core:os"
 import "core:path/filepath"
 import "core:strings"
 
@@ -342,6 +341,7 @@ rect_wh :: #force_inline proc(r: sdl3.FRect) -> V2 {
 
 CTX :: struct {
 	window:               ^sdl3.Window,
+	canvas:               ^sdl3.Texture,
 	renderer:             ^sdl3.Renderer,
 	should_close:         bool,
 
@@ -392,30 +392,35 @@ PotentialHotItem :: struct {
 	support_dragging: bool,
 }
 
-init_sdl :: proc() -> (ok: bool) {
-	if !sdl3.SetAppMetadata("Solitaire", "0.1", "me.bvisness.gamesfolder.solitaire") {
-		log.errorf("sdl3.SetAppMetadata failed.")
-		return
-	}
+init_sdl :: proc() {
+	must(
+		sdl3.SetAppMetadata("Solitaire", "0.1", "me.bvisness.gamesfolder.solitaire"),
+		"sdl3.SetAppMetadata failed.",
+	)
+	must(sdl3.Init(sdl3.INIT_VIDEO), "sdl3.Init failed.")
 
-	if sdl_res := sdl3.Init(sdl3.INIT_VIDEO); !sdl_res {
-		log.errorf("sdl3.Init failed.")
-		return false
-	}
+	must(
+		sdl3.CreateWindowAndRenderer(
+			"Solitaire",
+			i32(WINDOW_SIZE.x),
+			i32(WINDOW_SIZE.y),
+			sdl3.WindowFlags{},
+			&ctx.window,
+			&ctx.renderer,
+		),
+		"sdl3.CreateWindowAndRenderer failed.",
+	)
 
-	if !sdl3.CreateWindowAndRenderer(
-		"Solitaire",
-		i32(WINDOW_SIZE.x),
-		i32(WINDOW_SIZE.y),
-		sdl3.WindowFlags{},
-		&ctx.window,
-		&ctx.renderer,
-	) {
-		log.errorf("sdl3.CreateWindowAndRenderer failed.")
-		return false
-	}
-
-	return true
+	ctx.canvas = must(
+		sdl3.CreateTexture(
+			ctx.renderer,
+			.RGBA8888,
+			.TARGET,
+			i32(WINDOW_SIZE.x),
+			i32(WINDOW_SIZE.y),
+		),
+		"Failed to create canvas texture",
+	)
 }
 
 cleanup :: proc() {
@@ -595,6 +600,7 @@ next_variant :: proc() -> int {
 }
 
 draw :: proc() {
+	sdl3.SetRenderTarget(ctx.renderer, ctx.canvas)
 	sdl3.SetRenderDrawColor(ctx.renderer, 19, 127, 49, 255)
 	sdl3.RenderClear(ctx.renderer)
 
@@ -745,6 +751,8 @@ draw :: proc() {
 		draw_column(&game_state.dragging_column, drag_item_pos())
 	}
 
+	sdl3.SetRenderTarget(ctx.renderer, nil)
+	sdl3.RenderTexture(ctx.renderer, ctx.canvas, nil, nil)
 	sdl3.RenderPresent(ctx.renderer)
 }
 
@@ -1096,10 +1104,7 @@ frame :: proc() {
 main :: proc() {
 	context.logger = log.create_console_logger()
 
-	if res := init_sdl(); !res {
-		log.errorf("Initialization failed.")
-		os.exit(1)
-	}
+	init_sdl()
 	defer cleanup()
 
 	load_textures()
