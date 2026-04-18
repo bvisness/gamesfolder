@@ -32,6 +32,7 @@ WINDOW_SIZE :: V2{GAME_PADDING * 2 + CARD_SIZE.x * 7 + PILE_GAP * 6, 800}
 DECK_POS :: V2{GAME_PADDING, GAME_PADDING}
 FOUNDATION_POS :: V2{WINDOW_SIZE.x - GAME_PADDING - CARD_SIZE.x * 4 - PILE_GAP * 3, GAME_PADDING}
 MAIN_Y :: GAME_PADDING + CARD_SIZE.y + 40
+COLUMN_SPREAD :: 20
 
 // ----------------------------------------------------------------------------
 // Game logic
@@ -64,6 +65,7 @@ GameState :: struct {
 	deck:        Pile,
 	draw_pile:   Pile,
 	piles:       [7]Pile,
+	columns:     [7]Pile,
 	foundations: [4]Pile,
 
 	// Animation-related shenanigans
@@ -86,9 +88,15 @@ init_game :: proc() {
 	// Initial deal
 	for _, i in game_state.piles {
 		num_cards := i + 1
-		for _ in 0 ..< num_cards {
+		for n in 0 ..< num_cards {
 			// append(pile, c) // For some reason referencing &pile in the loop and doing this doesn't work, thanks Bill
-			append(&game_state.piles[i], pop(&game_state.deck))
+			card := pop(&game_state.deck)
+			if n == num_cards - 1 {
+				card.face_up = true
+				append(&game_state.columns[i], card)
+			} else {
+				append(&game_state.piles[i], card)
+			}
 		}
 	}
 }
@@ -142,7 +150,7 @@ texture_grid :: proc "contextless" (
 
 t_card := Texture {
 	mode        = .NINESLICE,
-	src         = sdl3.FRect{250, 250, 410, 620},
+	src         = sdl3.FRect{260, 260, 400, 605},
 	slices      = {65, 65, 65, 65},
 	slice_scale = 0.4 * CARD_SCALE,
 }
@@ -466,16 +474,23 @@ draw :: proc() {
 	sdl3.SetRenderDrawColor(ctx.renderer, 19, 127, 49, 255)
 	sdl3.RenderClear(ctx.renderer)
 
-	draw_pile(&game_state.deck, DECK_POS)
-	draw_pile(&game_state.draw_pile, DECK_POS + {CARD_SIZE.x + PILE_GAP, 0})
+	draw_pile(&game_state.deck, DECK_POS, true)
+	draw_pile(&game_state.draw_pile, DECK_POS + {CARD_SIZE.x + PILE_GAP, 0}, true)
 
 	for i in 0 ..< 7 {
-		draw_pile(&game_state.piles[i], {GAME_PADDING + f32(i) * (CARD_SIZE.x + PILE_GAP), MAIN_Y})
+		pile := &game_state.piles[i]
+		pile_pos := V2{GAME_PADDING + f32(i) * (CARD_SIZE.x + PILE_GAP), MAIN_Y}
+		draw_pile(pile, pile_pos, false)
+		pile_top_pos := pile_pos + {0, bumpage(len(pile) - 1, false)}
+		for card, j in game_state.columns[i] {
+			draw_card(card, pile_top_pos + {0, f32(j) * COLUMN_SPREAD})
+		}
 	}
 	for i in 0 ..< 4 {
 		draw_pile(
 			&game_state.foundations[i],
 			FOUNDATION_POS + {(CARD_SIZE.x + PILE_GAP) * f32(i), 0},
+			true,
 		)
 	}
 
@@ -558,7 +573,13 @@ draw_card :: proc(card: Card, card_pos: V2) {
 	}
 }
 
-draw_pile :: proc(pile: ^Pile, pos: V2) {
+bumpage :: proc(n: int, up: bool) -> f32 {
+	CARDS_PER_FACEDOWN :: 2
+	BUMP_AMT :: 2
+	return f32(n / CARDS_PER_FACEDOWN) * BUMP_AMT * (up ? -1 : 1)
+}
+
+draw_pile :: proc(pile: ^Pile, pos: V2, up: bool) {
 	if len(pile) == 0 {
 		return
 	}
@@ -566,16 +587,10 @@ draw_pile :: proc(pile: ^Pile, pos: V2) {
 	top := pile[len(pile) - 1]
 	num_remaining := len(pile) - 1
 
-	CARDS_PER_FACEDOWN :: 2
-	FACEDOWN_BUMP_Y :: -2
 	for i in 0 ..< num_remaining {
-		draw_card(
-			Card{face_up = false},
-			{pos.x, pos.y + FACEDOWN_BUMP_Y * f32(i / CARDS_PER_FACEDOWN)},
-		)
+		draw_card(Card{face_up = false}, {pos.x, pos.y + bumpage(i, up)})
 	}
-
-	draw_card(top, {pos.x, pos.y + FACEDOWN_BUMP_Y * f32((len(pile) - 1) / CARDS_PER_FACEDOWN)})
+	draw_card(top, {pos.x, pos.y + bumpage(len(pile) - 1, up)})
 }
 
 render_texture :: proc(texture: ^Texture, dst: sdl3.FRect, upside_down := false) {
