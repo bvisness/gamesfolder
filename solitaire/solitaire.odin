@@ -354,11 +354,24 @@ CTX :: struct {
 	hot_mouse_button:     int,
 	drag_supported:       bool,
 	dragging:             bool,
-	drag_started:         bool,
 	drag_canceled:        bool,
 	drag_start_item_pos:  V2,
 	drag_start_mouse_pos: V2,
 	potential_hot_items:  [dynamic]PotentialHotItem,
+
+	// UI actions for hot item
+
+	// This only means that the mouse went up, NOT that the mouse went up in the
+	// right place. If your UI control cares about this, e.g. to avoid activating
+	// a button on release when it moved too far away, filter for this in the UI
+	// control.
+	clicked:              bool,
+
+	// The hot item had a drag started on it this frame.
+	drag_started:         bool,
+
+	// The hot item was dropped this frame.
+	drag_ended:           bool,
 }
 ctx := CTX{}
 
@@ -459,37 +472,28 @@ advertise_hotness :: proc(id: string, rect: sdl3.FRect, support_dragging: bool) 
 	append(&ctx.potential_hot_items, target)
 }
 
-set_hot :: proc(target: PotentialHotItem, hot_mouse_button: int) -> (hover: bool, active: bool) {
-	if ctx.hot_item != "" {
-		return false, false
-	}
+// Sets an item as hot, enabling interactions on future frames. Marks the
+// context dirty.
+set_hot :: proc(target: PotentialHotItem, hot_mouse_button: int) {
+	assert(ctx.hot_item == "")
 
 	copy_from_string(ctx.hot_item_buf[:], target.id)
 	ctx.hot_item = string(ctx.hot_item_buf[:len(target.id)])
 	ctx.hot_mouse_button = hot_mouse_button
-	assert(!ctx.dragging)
+	ctx.dragging = false
 	ctx.drag_supported = target.support_dragging
-	ctx.drag_start_mouse_pos = V2(ctx.mouse_pos)
+	ctx.drag_started = false
+	ctx.drag_canceled = false
 	ctx.drag_start_item_pos = rect_xy(target.rect)
+	ctx.drag_start_mouse_pos = V2(ctx.mouse_pos)
 	log.infof(
-		"NOW HOT: %s, btn %d (%s)",
+		"UI: NOW HOT: %s, btn %d (%s)",
 		ctx.hot_item,
 		ctx.hot_mouse_button,
 		ctx.drag_supported ? "draggable" : "not draggable",
 	)
 
 	ctx.dirty = true
-	return true, true
-}
-
-clear_hotness :: proc() {
-	ctx.hot_item = ""
-	ctx.hot_mouse_button = 0
-	ctx.dragging = false
-	ctx.drag_started = false
-	ctx.drag_canceled = false
-	ctx.drag_start_item_pos = {}
-	ctx.drag_start_mouse_pos = {}
 }
 
 check_hover :: proc(id: string, rect: sdl3.FRect) -> bool {
@@ -516,34 +520,42 @@ check_active :: proc(id: string, rect: sdl3.FRect) -> bool {
 }
 
 check_clicked :: proc(id: string, rect: sdl3.FRect) -> int {
-	if ctx.hot_item != id || ctx.dragging {
-		return 0
+	if ctx.hot_item == id && ctx.clicked {
+		// We still check the radius here because maybe not everything supports dragging.
+		release_rect := sdl3.FRect {
+			rect.x - CLICK_RELEASE_RADIUS,
+			rect.y - CLICK_RELEASE_RADIUS,
+			rect.w + 2 * CLICK_RELEASE_RADIUS,
+			rect.h + 2 * CLICK_RELEASE_RADIUS,
+		}
+		if sdl3.PointInRectFloat(ctx.mouse_pos, release_rect) {
+			log.infof("id %s clicked!", ctx.hot_item)
+			ctx.dirty = true
+			return ctx.hot_mouse_button
+		}
 	}
 
-	// We still check the radius here because maybe not everything supports dragging.
-	release_rect := sdl3.FRect {
-		rect.x - CLICK_RELEASE_RADIUS,
-		rect.y - CLICK_RELEASE_RADIUS,
-		rect.w + 2 * CLICK_RELEASE_RADIUS,
-		rect.h + 2 * CLICK_RELEASE_RADIUS,
-	}
-	if sdl3.PointInRectFloat(ctx.mouse_pos, release_rect) &&
-	   ctx.mouse_released[ctx.hot_mouse_button] {
-		log.infof("id %s clicked!", ctx.hot_item)
-		ctx.dirty = true
-		return ctx.hot_mouse_button
-	} else {
-		return 0
-	}
+	return 0
 }
 
-check_dragging :: proc(id: string) -> (dragging, started: bool) {
-	dragging = ctx.hot_item == id && ctx.dragging
-	started = dragging && ctx.drag_started
-	if started {
-		ctx.drag_started = false
-	}
-	return
+// Checks if a drag was started.
+check_drag_started :: proc(id: string) -> bool {
+	return ctx.hot_item == id && ctx.drag_started
+}
+
+// This one doesn't take an ID because the UI elements who call this will just
+// check on their own to see if they can receive whatever is being dragged.
+check_drag_ended :: proc() -> bool {
+	return ctx.drag_ended
+}
+
+// Clears the current UI action. Also marks the context as dirty to make sure
+// things always re-draw afterward.
+clear_ui_action :: proc() {
+	ctx.clicked = false
+	ctx.drag_started = false
+	ctx.drag_ended = false
+	ctx.dirty = true
 }
 
 drag_delta :: proc() -> V2 {
@@ -554,27 +566,6 @@ drag_delta :: proc() -> V2 {
 drag_item_pos :: proc() -> V2 {
 	// assert(ctx.dragging)
 	return ctx.drag_start_item_pos + drag_delta()
-}
-
-DragResult :: enum {
-	NONE,
-	COMPLETED,
-	CANCELED,
-}
-
-check_dropped :: proc(id: string) -> DragResult {
-	if ctx.hot_item != id || !ctx.dragging {
-		return .NONE
-	}
-
-	if ctx.mouse_released[ctx.hot_mouse_button] {
-		if ctx.drag_canceled {
-			return .CANCELED
-		} else {
-			return .COMPLETED
-		}
-	}
-	return .NONE
 }
 
 // ----------------------------------------------------------------------------
@@ -600,6 +591,7 @@ draw :: proc() {
 		advertise_hotness(id, rect, true)
 
 		if mouse_btn := check_clicked(id, rect); mouse_btn == MOUSE_LEFT {
+			clear_ui_action()
 			if len(game_state.deck) > 0 {
 				for _ in 0 ..< min(len(game_state.deck), 3) {
 					card := pop(&game_state.deck)
@@ -626,7 +618,8 @@ draw :: proc() {
 			top_card := game_state.draw_pile[len(game_state.draw_pile) - 1]
 			id := card_id(top_card)
 			advertise_hotness(id, pile_top_rect, true)
-			if _, started := check_dragging(id); started {
+			if check_drag_started(id) {
+				clear_ui_action()
 				pop(&game_state.draw_pile)
 				append(&game_state.dragging_column, top_card)
 				game_state.drag_return_pile = &game_state.draw_pile
@@ -765,7 +758,8 @@ draw_column :: proc(pile: ^Pile, pos: V2) {
 	for card, i in pile {
 		id := card_id(card, context.temp_allocator)
 		advertise_hotness(id, card_rect(card_pos), true)
-		if _, started := check_dragging(id); started {
+		if check_drag_started(id) {
+			clear_ui_action()
 			for dragged_card in pile[i:] {
 				append(&game_state.dragging_column, dragged_card)
 			}
@@ -865,16 +859,12 @@ loop :: proc() {
 		free_all(context.temp_allocator)
 		ctx.potential_hot_items = make([dynamic]PotentialHotItem, context.temp_allocator)
 
-		// Reset ephemeral state to the default
+		// Reset ephemeral input state to the default
 		for &pressed in ctx.mouse_pressed {
 			pressed = false
 		}
 		for &released in ctx.mouse_released {
 			released = false
-		}
-		ctx.drag_started = false
-		if ctx.mouse_released[ctx.hot_mouse_button] {
-			clear_hotness()
 		}
 
 		// Process events
@@ -893,57 +883,89 @@ loop :: proc() {
 			process_event(&e)
 		}
 
-		// Potentially start a drag, so as to more lower the latency of it all
-		if ctx.mouse_down[ctx.hot_mouse_button] {
-			drag_delta := V2(ctx.mouse_pos) - ctx.drag_start_mouse_pos
-			if ctx.drag_supported &&
-			   !ctx.dragging &&
-			   (abs(drag_delta.x) >= DRAG_THRESHOLD || abs(drag_delta.y) >= DRAG_THRESHOLD) {
-				ctx.dragging = true
-				ctx.drag_started = true
-			}
-		} else {
-			ctx.dragging = false
-		}
-
-		// Handle any canceled drag and drops
-		if !ctx.dragging && len(game_state.dragging_column) > 0 {
-			for card in game_state.dragging_column {
-				append(game_state.drag_return_pile, card)
-			}
-			clear(&game_state.dragging_column)
-		}
-
 		// Draw the frame / animate and whatever
 		frame()
 
-		// Loop over potentially hot things in reverse order because we drew them
-		// in forward order...I am good porgrammer
-		for i := len(ctx.potential_hot_items) - 1; i >= 0; i -= 1 {
-			if ctx.hot_item != "" {
-				break
-			}
+		// After drawing the UI: update UI interaction state for the next frame,
+		// e.g. activating a click, starting a drag, or ending a drag. Or, mark a
+		// new item as hot for future interactions.
+		ctx.clicked = false
+		ctx.drag_started = false
+		if ctx.hot_item != "" {
+			// An item is already hot, potentially activate an action on it
 
-			potential_item := ctx.potential_hot_items[i]
-			if sdl3.PointInRectFloat(sdl3.FPoint(ctx.mouse_pos), potential_item.rect) {
-				// BILL! Why do I need parens here, Bill????
-				for btn in ([]int{MOUSE_LEFT, MOUSE_RIGHT}) {
-					if ctx.mouse_pressed[btn] {
-						set_hot(potential_item, btn)
+			if ctx.mouse_down[ctx.hot_mouse_button] {
+				// If the mouse is still down, we either have a click in progress or
+				// possibly have a (possibly pending) drag and drop.
+				// TODO
+				if ctx.drag_supported {
+					drag_delta := V2(ctx.mouse_pos) - ctx.drag_start_mouse_pos
+					if !ctx.dragging &&
+					   (abs(drag_delta.x) >= DRAG_THRESHOLD ||
+							   abs(drag_delta.y) >= DRAG_THRESHOLD) {
+						log.infof("UI: ACTION: started drag.")
+						ctx.dragging = true
+						ctx.drag_started = true
+						ctx.dirty = true
+					}
+				}
+			} else if ctx.mouse_released[ctx.hot_mouse_button] {
+				// The mouse was released this frame. We either need to report a click
+				// or a drop (or nothing, if the drag was canceled!) Regardless, we
+				// don't yet clear out the hot item until the next frame.
+				if ctx.dragging {
+					if !ctx.drag_canceled {
+						log.infof("UI: ACTION: ended drag.")
+						ctx.drag_ended = true
+						ctx.dirty = true
+					}
+				} else {
+					log.infof("UI: ACTION: clicked.")
+					ctx.clicked = true
+					ctx.dirty = true
+				}
+			} else {
+				// The mouse has been up for at least two frames; all UI interaction
+				// state should be cleared.
+				log.infof("UI: Resetting all interaction state.")
+
+				ctx.hot_item = ""
+				ctx.hot_mouse_button = 0
+				ctx.drag_supported = false
+				ctx.dragging = false
+				ctx.drag_canceled = false
+				ctx.drag_start_item_pos = {}
+				ctx.drag_start_mouse_pos = {}
+
+				clear_ui_action()
+				ctx.dirty = true
+			}
+		} else {
+			// No hot item; check for a new one
+
+			// Loop over potentially hot things in reverse order because we drew them
+			// in forward order...I am good porgrammer
+			check_more: for i := len(ctx.potential_hot_items) - 1; i >= 0; i -= 1 {
+				potential_item := ctx.potential_hot_items[i]
+				if sdl3.PointInRectFloat(sdl3.FPoint(ctx.mouse_pos), potential_item.rect) {
+					// BILL! Why do I need parens here, Bill????
+					for btn in ([]int{MOUSE_LEFT, MOUSE_RIGHT}) {
+						if ctx.mouse_pressed[btn] {
+							set_hot(potential_item, btn)
+							break check_more
+						}
 					}
 				}
 			}
 		}
 
-		// Clear out frame-ephemeral state
-		if ctx.mouse_released[ctx.hot_mouse_button] {
-			clear_hotness()
-		}
-		for &pressed in ctx.mouse_pressed {
-			pressed = false
-		}
-		for &released in ctx.mouse_released {
-			released = false
+		// Final cleanup: handle any canceled drag and drops by putting the
+		// cards back.
+		if !ctx.dragging && len(game_state.dragging_column) > 0 {
+			for card in game_state.dragging_column {
+				append(game_state.drag_return_pile, card)
+			}
+			clear(&game_state.dragging_column)
 		}
 	}
 }
@@ -960,7 +982,7 @@ process_event :: proc(e: ^sdl3.Event) {
 		switch e.key.key {
 		case sdl3.K_ESCAPE:
 			if ctx.dragging {
-				clear_hotness()
+				ctx.drag_canceled = true
 			}
 		}
 	case .MOUSE_MOTION:
