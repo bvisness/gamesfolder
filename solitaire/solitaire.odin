@@ -29,12 +29,12 @@ CARD_SCALE :: CARD_SIZE.x / CARD_NOMINAL_SIZE.x
 
 GAME_PADDING :: 40
 PILE_GAP :: 20
-WINDOW_SIZE :: V2{GAME_PADDING * 2 + CARD_SIZE.x * 7 + PILE_GAP * 6, 800}
+WINDOW_SIZE :: V2{GAME_PADDING * 2 + CARD_SIZE.x * 7 + PILE_GAP * 6, 1000}
 
 DECK_POS :: V2{GAME_PADDING, GAME_PADDING}
 FOUNDATION_POS :: V2{WINDOW_SIZE.x - GAME_PADDING - CARD_SIZE.x * 4 - PILE_GAP * 3, GAME_PADDING}
 MAIN_Y :: GAME_PADDING + CARD_SIZE.y + 40
-COLUMN_SPREAD :: 50
+COLUMN_SPREAD :: 35
 
 CARD_DROP_RADIUS :: V2{CARD_SIZE.x / 2 - 10, CARD_SIZE.y - 40}
 
@@ -603,7 +603,7 @@ draw :: proc() {
 		id := "deck"
 		rect := sdl3.FRect{DECK_POS.x, DECK_POS.y, CARD_SIZE.x, CARD_SIZE.y}
 		draw_pile(&game_state.deck, DECK_POS, true)
-		advertise_hotness(id, rect, true)
+		advertise_hotness(id, rect, false)
 
 		if mouse_btn := check_clicked(id, rect); mouse_btn == MOUSE_LEFT {
 			clear_ui_action()
@@ -647,8 +647,20 @@ draw :: proc() {
 		pile := &game_state.piles[i]
 		column := &game_state.columns[i]
 
+		pile_id := fmt.tprintf("pile:%d", i)
 		pile_pos := V2{GAME_PADDING + f32(i) * (CARD_SIZE.x + PILE_GAP), MAIN_Y}
 		pile_top_rect := draw_pile(pile, pile_pos, false)
+		if len(pile) > 0 {
+			advertise_hotness(pile_id, pile_top_rect, false)
+			if btn := check_clicked(pile_id, pile_top_rect); btn == MOUSE_LEFT {
+				clear_ui_action()
+				if len(column) == 0 {
+					card := pop(pile)
+					card.face_up = true
+					append(column, card)
+				}
+			}
+		}
 
 		column_top_pos := draw_column(column, rect_xy(pile_top_rect))
 		if dropped, drop_pos := check_drag_ended(); dropped {
@@ -656,8 +668,19 @@ draw :: proc() {
 				sdl3.FPoint(drop_pos),
 				card_drop_rect(column_top_pos),
 			)
-			// TODO: Check for card compatibility
-			if dropped_here {
+
+			compatible: bool
+			dragged_card := game_state.dragging_column[0]
+			if len(column) > 0 {
+				column_top_card := column[len(column) - 1]
+				compatible =
+					dragged_card.number == column_top_card.number - 1 &&
+					suit_is_red(column_top_card.suit) != suit_is_red(dragged_card.suit)
+			} else {
+				compatible = dragged_card.number == 13 // King
+			}
+
+			if dropped_here && compatible {
 				clear_ui_action()
 				for card in game_state.dragging_column {
 					append(column, card)
@@ -670,11 +693,44 @@ draw :: proc() {
 
 	// Draw the foundations
 	for i in 0 ..< 4 {
-		draw_pile(
-			&game_state.foundations[i],
-			FOUNDATION_POS + {(CARD_SIZE.x + PILE_GAP) * f32(i), 0},
-			true,
-		)
+		id := fmt.tprintf("foundation:%d", i)
+		foundation := &game_state.foundations[i]
+		pos := FOUNDATION_POS + {(CARD_SIZE.x + PILE_GAP) * f32(i), 0}
+		foundation_top_rect := draw_pile(foundation, pos, true)
+
+		advertise_hotness(id, foundation_top_rect, true)
+		if check_drag_started(id) {
+			clear_ui_action()
+			append(&game_state.dragging_column, pop(foundation))
+			game_state.drag_return_pile = foundation
+		}
+
+		if len(game_state.dragging_column) == 1 {
+			dragged_card := game_state.dragging_column[0]
+
+			if dropped, drop_pos := check_drag_ended(); dropped {
+				dropped_here := sdl3.PointInRectFloat(
+					sdl3.FPoint(drop_pos),
+					card_drop_rect(rect_xy(foundation_top_rect)),
+				)
+
+				compatible: bool
+				if len(foundation) == 0 {
+					compatible = dragged_card.number == 1 // Ace
+				} else {
+					top_card := foundation[len(foundation) - 1]
+					compatible =
+						dragged_card.number == top_card.number + 1 &&
+						dragged_card.suit == top_card.suit
+				}
+
+				if dropped_here && compatible {
+					clear_ui_action()
+					append(foundation, dragged_card)
+					clear(&game_state.dragging_column)
+				}
+			}
+		}
 	}
 
 	// Draw whatever is being dragged
