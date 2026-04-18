@@ -64,15 +64,19 @@ Animation :: enum {
 }
 
 GameState :: struct {
-	deck:        Pile,
-	draw_pile:   Pile,
-	piles:       [7]Pile,
-	columns:     [7]Pile,
-	foundations: [4]Pile,
+	deck:             Pile,
+	draw_pile:        Pile,
+	piles:            [7]Pile,
+	columns:          [7]Pile,
+	foundations:      [4]Pile,
+
+	// Click and drag
+	dragging_column:  Pile,
+	drag_return_pile: ^Pile,
 
 	// Animation-related shenanigans
-	animation:   Animation,
-	num_dealt:   int,
+	animation:        Animation,
+	num_dealt:        int,
 }
 game_state: GameState
 
@@ -350,6 +354,8 @@ CTX :: struct {
 	hot_mouse_button:     int,
 	drag_supported:       bool,
 	dragging:             bool,
+	drag_started:         bool,
+	drag_canceled:        bool,
 	drag_start_item_pos:  V2,
 	drag_start_mouse_pos: V2,
 	potential_hot_items:  [dynamic]PotentialHotItem,
@@ -480,6 +486,8 @@ clear_hotness :: proc() {
 	ctx.hot_item = ""
 	ctx.hot_mouse_button = 0
 	ctx.dragging = false
+	ctx.drag_started = false
+	ctx.drag_canceled = false
 	ctx.drag_start_item_pos = {}
 	ctx.drag_start_mouse_pos = {}
 }
@@ -529,25 +537,44 @@ check_clicked :: proc(id: string, rect: sdl3.FRect) -> int {
 	}
 }
 
-check_dragging :: proc(id: string) -> bool {
-	return ctx.hot_item == id && ctx.dragging
+check_dragging :: proc(id: string) -> (dragging, started: bool) {
+	dragging = ctx.hot_item == id && ctx.dragging
+	started = dragging && ctx.drag_started
+	if started {
+		ctx.drag_started = false
+	}
+	return
 }
 
 drag_delta :: proc() -> V2 {
-	assert(ctx.dragging)
+	// assert(ctx.dragging)
 	return V2(ctx.mouse_pos) - ctx.drag_start_mouse_pos
 }
 
 drag_item_pos :: proc() -> V2 {
-	assert(ctx.dragging)
+	// assert(ctx.dragging)
 	return ctx.drag_start_item_pos + drag_delta()
 }
 
-check_dropped :: proc(id: string) -> bool {
+DragResult :: enum {
+	NONE,
+	COMPLETED,
+	CANCELED,
+}
+
+check_dropped :: proc(id: string) -> DragResult {
 	if ctx.hot_item != id || !ctx.dragging {
-		return false
+		return .NONE
 	}
-	return ctx.mouse_released[ctx.hot_mouse_button]
+
+	if ctx.mouse_released[ctx.hot_mouse_button] {
+		if ctx.drag_canceled {
+			return .CANCELED
+		} else {
+			return .COMPLETED
+		}
+	}
+	return .NONE
 }
 
 // ----------------------------------------------------------------------------
@@ -567,7 +594,7 @@ draw :: proc() {
 
 	// Draw the deck
 	{
-		id := "draw pile"
+		id := "deck"
 		rect := sdl3.FRect{DECK_POS.x, DECK_POS.y, CARD_SIZE.x, CARD_SIZE.y}
 		draw_pile(&game_state.deck, DECK_POS, true)
 		advertise_hotness(id, rect, true)
@@ -596,43 +623,45 @@ draw :: proc() {
 		pile_top_rect := draw_pile(&game_state.draw_pile, pile_pos, true)
 
 		if len(game_state.draw_pile) > 0 {
-			id := card_id(game_state.draw_pile[len(game_state.draw_pile) - 1])
+			top_card := game_state.draw_pile[len(game_state.draw_pile) - 1]
+			id := card_id(top_card)
 			advertise_hotness(id, pile_top_rect, true)
-			if check_dragging(id) {
-				log.infof("TODO: start dragging card %s hooray", id)
+			if _, started := check_dragging(id); started {
+				pop(&game_state.draw_pile)
+				append(&game_state.dragging_column, top_card)
+				game_state.drag_return_pile = &game_state.draw_pile
 			}
 		}
 	}
 
+	// Draw the piles and columns
 	for i in 0 ..< 7 {
 		pile := &game_state.piles[i]
 		pile_pos := V2{GAME_PADDING + f32(i) * (CARD_SIZE.x + PILE_GAP), MAIN_Y}
 		draw_pile(pile, pile_pos, false)
 		pile_top_pos := pile_pos + {0, bumpage(len(pile) - 1, false)}
-
-		// We continually adjust and add to card_pos to allow for dragging part of
-		// a column (visually)
-		card_pos := pile_top_pos
-		for card, j in game_state.columns[i] {
-			id := card_id(card, context.temp_allocator)
-			advertise_hotness(id, card_rect(card_pos), true)
-			if check_dragging(id) {
-				card_pos = drag_item_pos()
-			}
-			if check_dropped(id) {
-				// TODO
-			}
-
-			draw_card(card, card_pos)
-			card_pos = card_pos + {0, f32(j) * COLUMN_SPREAD}
-		}
+		draw_column(&game_state.columns[i], pile_top_pos)
 	}
+
+	// Draw the foundations
 	for i in 0 ..< 4 {
 		draw_pile(
 			&game_state.foundations[i],
 			FOUNDATION_POS + {(CARD_SIZE.x + PILE_GAP) * f32(i), 0},
 			true,
 		)
+	}
+
+	// Draw whatever is being dragged
+	if ctx.dragging {
+		log.infof(
+			"number of dragged cards: %v (at %v)",
+			len(game_state.dragging_column),
+			drag_item_pos(),
+		)
+	}
+	if len(game_state.dragging_column) > 0 {
+		draw_column(&game_state.dragging_column, drag_item_pos())
 	}
 
 	sdl3.RenderPresent(ctx.renderer)
@@ -731,6 +760,25 @@ draw_pile :: proc(pile: ^Pile, pos: V2, up: bool) -> sdl3.FRect {
 	return draw_card(top, {pos.x, pos.y + bumpage(len(pile) - 1, up)})
 }
 
+draw_column :: proc(pile: ^Pile, pos: V2) {
+	card_pos := pos
+	for card, i in pile {
+		id := card_id(card, context.temp_allocator)
+		advertise_hotness(id, card_rect(card_pos), true)
+		if _, started := check_dragging(id); started {
+			for dragged_card in pile[i:] {
+				append(&game_state.dragging_column, dragged_card)
+			}
+			resize(pile, i)
+			game_state.drag_return_pile = pile
+			break
+		}
+
+		draw_card(card, card_pos)
+		card_pos = card_pos + {0, f32(i) * COLUMN_SPREAD}
+	}
+}
+
 render_texture :: proc(texture: ^Texture, dst: sdl3.FRect, upside_down := false) {
 	assert(texture.tex != nil, "texture was not loaded!")
 	src: Maybe(^sdl3.FRect)
@@ -817,6 +865,18 @@ loop :: proc() {
 		free_all(context.temp_allocator)
 		ctx.potential_hot_items = make([dynamic]PotentialHotItem, context.temp_allocator)
 
+		// Reset ephemeral state to the default
+		for &pressed in ctx.mouse_pressed {
+			pressed = false
+		}
+		for &released in ctx.mouse_released {
+			released = false
+		}
+		ctx.drag_started = false
+		if ctx.mouse_released[ctx.hot_mouse_button] {
+			clear_hotness()
+		}
+
 		// Process events
 		e: sdl3.Event
 		if ctx.dirty {
@@ -837,11 +897,21 @@ loop :: proc() {
 		if ctx.mouse_down[ctx.hot_mouse_button] {
 			drag_delta := V2(ctx.mouse_pos) - ctx.drag_start_mouse_pos
 			if ctx.drag_supported &&
+			   !ctx.dragging &&
 			   (abs(drag_delta.x) >= DRAG_THRESHOLD || abs(drag_delta.y) >= DRAG_THRESHOLD) {
 				ctx.dragging = true
+				ctx.drag_started = true
 			}
 		} else {
 			ctx.dragging = false
+		}
+
+		// Handle any canceled drag and drops
+		if !ctx.dragging && len(game_state.dragging_column) > 0 {
+			for card in game_state.dragging_column {
+				append(game_state.drag_return_pile, card)
+			}
+			clear(&game_state.dragging_column)
 		}
 
 		// Draw the frame / animate and whatever
