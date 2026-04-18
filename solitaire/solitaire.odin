@@ -2,6 +2,7 @@ package minesweeper
 
 import "base:intrinsics"
 import "base:runtime"
+import "core:fmt"
 import "core:log"
 import "core:math/rand"
 import "core:os"
@@ -16,6 +17,7 @@ V2 :: [2]f32
 MOUSE_LEFT :: 1
 MOUSE_RIGHT :: 3
 CLICK_RELEASE_RADIUS :: 20
+DRAG_THRESHOLD :: 4
 
 // When I figured out how to lay everything out the way I liked, I used a card size of 300x400.
 // But this is too big for actual gameplay, hence CARD_SIZE is smaller. Rather than hardcode a
@@ -105,7 +107,18 @@ suit_is_red :: #force_inline proc(s: Suit) -> bool {
 	return s == .DIAMONDS || s == .HEARTS
 }
 
-lay_out_cards :: proc() {}
+card_rect :: proc(card: Card, pos: V2) -> sdl3.FRect {
+	return sdl3.FRect {
+		pos.x,
+		pos.y,
+		CARD_NOMINAL_SIZE.x * CARD_SCALE,
+		CARD_NOMINAL_SIZE.y * CARD_SCALE,
+	}
+}
+
+card_id :: proc(card: Card, allocator := context.allocator) -> string {
+	return fmt.aprintf("card:S%dN%d", card.suit, card.number)
+}
 
 // ----------------------------------------------------------------------------
 // Textures
@@ -313,30 +326,41 @@ rect_wh :: #force_inline proc(r: sdl3.FRect) -> V2 {
 // Loading & initialization
 
 CTX :: struct {
-	window:           ^sdl3.Window,
-	renderer:         ^sdl3.Renderer,
-	should_close:     bool,
+	window:               ^sdl3.Window,
+	renderer:             ^sdl3.Renderer,
+	should_close:         bool,
 
 	// Size
-	window_size:      [2]i32,
+	window_size:          [2]i32,
 
 	// Timing
-	t:                f64,
-	dt:               f64,
-	dirty:            bool,
+	t:                    f64,
+	dt:                   f64,
+	dirty:                bool,
 
 	// Input
-	mouse_pos:        sdl3.FPoint,
-	mouse_down:       [10]bool,
-	mouse_pressed:    [10]bool,
-	mouse_released:   [10]bool,
+	mouse_pos:            sdl3.FPoint,
+	mouse_down:           [10]bool,
+	mouse_pressed:        [10]bool,
+	mouse_released:       [10]bool,
 
 	// UI state
-	hot_item_buf:     [256]byte,
-	hot_item:         string,
-	hot_mouse_button: int,
+	hot_item_buf:         [256]byte,
+	hot_item:             string,
+	hot_mouse_button:     int,
+	drag_supported:       bool,
+	dragging:             bool,
+	drag_start_item_pos:  V2,
+	drag_start_mouse_pos: V2,
+	potential_hot_items:  [dynamic]PotentialHotItem,
 }
 ctx := CTX{}
+
+PotentialHotItem :: struct {
+	rect:             sdl3.FRect,
+	id:               string,
+	support_dragging: bool,
+}
 
 init_sdl :: proc() -> (ok: bool) {
 	if !sdl3.SetAppMetadata("Solitaire", "0.1", "me.bvisness.gamesfolder.solitaire") {
@@ -420,43 +444,108 @@ load_texture_slice_from_png :: proc(path: string, textures: ..[]Texture) {
 // ----------------------------------------------------------------------------
 // UI state
 
-set_hot :: proc(id: string, hot_mouse_button: int) -> (hover: bool, active: bool) {
+advertise_hotness :: proc(id: string, rect: sdl3.FRect, support_dragging: bool) {
+	target := PotentialHotItem {
+		rect             = rect,
+		id               = id,
+		support_dragging = support_dragging,
+	}
+	append(&ctx.potential_hot_items, target)
+}
+
+set_hot :: proc(target: PotentialHotItem, hot_mouse_button: int) -> (hover: bool, active: bool) {
 	if ctx.hot_item != "" {
 		return false, false
 	}
 
-	copy_from_string(ctx.hot_item_buf[:], id)
-	ctx.hot_item = string(ctx.hot_item_buf[:len(id)])
+	copy_from_string(ctx.hot_item_buf[:], target.id)
+	ctx.hot_item = string(ctx.hot_item_buf[:len(target.id)])
 	ctx.hot_mouse_button = hot_mouse_button
-	log.infof("NOW HOT: %s, btn %d", ctx.hot_item, ctx.hot_mouse_button)
+	assert(!ctx.dragging)
+	ctx.drag_supported = target.support_dragging
+	ctx.drag_start_mouse_pos = V2(ctx.mouse_pos)
+	ctx.drag_start_item_pos = rect_xy(target.rect)
+	log.infof(
+		"NOW HOT: %s, btn %d (%s)",
+		ctx.hot_item,
+		ctx.hot_mouse_button,
+		ctx.drag_supported ? "draggable" : "not draggable",
+	)
 
 	ctx.dirty = true
 	return true, true
 }
 
-check_hotness :: proc(id: string, rect: sdl3.FRect) -> (hover: bool, active: bool, clicked: int) {
-	// If the item is "hot", meaning currently under interaction
+clear_hotness :: proc() {
+	ctx.hot_item = ""
+	ctx.hot_mouse_button = 0
+	ctx.dragging = false
+	ctx.drag_start_item_pos = {}
+	ctx.drag_start_mouse_pos = {}
+}
+
+check_hover :: proc(id: string, rect: sdl3.FRect) -> bool {
+	return ctx.hot_item == "" && sdl3.PointInRectFloat(ctx.mouse_pos, rect)
+}
+
+check_active :: proc(id: string, rect: sdl3.FRect) -> bool {
 	if ctx.hot_item == id {
+		if ctx.dragging {
+			return false
+		}
+
+		// We still check the radius here because maybe not everything supports dragging.
 		release_rect := sdl3.FRect {
 			rect.x - CLICK_RELEASE_RADIUS,
 			rect.y - CLICK_RELEASE_RADIUS,
 			rect.w + 2 * CLICK_RELEASE_RADIUS,
 			rect.h + 2 * CLICK_RELEASE_RADIUS,
 		}
-		if sdl3.PointInRectFloat(ctx.mouse_pos, release_rect) {
-			if ctx.mouse_released[ctx.hot_mouse_button] {
-				ctx.dirty = true
-				return false, false, ctx.hot_mouse_button
-			} else {
-				return true, true, 0
-			}
-		}
-		return false, false, 0
+		return sdl3.PointInRectFloat(ctx.mouse_pos, release_rect)
 	}
 
-	// Otherwise, maybe just hover
-	hovered := sdl3.PointInRectFloat(ctx.mouse_pos, rect)
-	return hovered, false, 0
+	return false
+}
+
+check_clicked :: proc(id: string, rect: sdl3.FRect) -> int {
+	if ctx.hot_item != id || ctx.dragging {
+		return 0
+	}
+
+	// We still check the radius here because maybe not everything supports dragging.
+	release_rect := sdl3.FRect {
+		rect.x - CLICK_RELEASE_RADIUS,
+		rect.y - CLICK_RELEASE_RADIUS,
+		rect.w + 2 * CLICK_RELEASE_RADIUS,
+		rect.h + 2 * CLICK_RELEASE_RADIUS,
+	}
+	if sdl3.PointInRectFloat(ctx.mouse_pos, release_rect) &&
+	   ctx.mouse_released[ctx.hot_mouse_button] {
+		return ctx.hot_mouse_button
+	} else {
+		return 0
+	}
+}
+
+check_dragging :: proc(id: string) -> bool {
+	return ctx.hot_item == id && ctx.dragging
+}
+
+drag_delta :: proc() -> V2 {
+	assert(ctx.dragging)
+	return V2(ctx.mouse_pos) - ctx.drag_start_mouse_pos
+}
+
+drag_item_pos :: proc() -> V2 {
+	assert(ctx.dragging)
+	return ctx.drag_start_item_pos + drag_delta()
+}
+
+check_dropped :: proc(id: string) -> bool {
+	if ctx.hot_item != id || !ctx.dragging {
+		return false
+	}
+	return ctx.mouse_released[ctx.hot_mouse_button]
 }
 
 // ----------------------------------------------------------------------------
@@ -482,8 +571,22 @@ draw :: proc() {
 		pile_pos := V2{GAME_PADDING + f32(i) * (CARD_SIZE.x + PILE_GAP), MAIN_Y}
 		draw_pile(pile, pile_pos, false)
 		pile_top_pos := pile_pos + {0, bumpage(len(pile) - 1, false)}
+
+		// We continually adjust and add to card_pos to allow for dragging part of
+		// a column (visually)
+		card_pos := pile_top_pos
 		for card, j in game_state.columns[i] {
-			draw_card(card, pile_top_pos + {0, f32(j) * COLUMN_SPREAD})
+			id := card_id(card, context.temp_allocator)
+			advertise_hotness(id, card_rect(card, card_pos), true)
+			if check_dragging(id) {
+				card_pos = drag_item_pos()
+			}
+			if check_dropped(id) {
+				// TODO
+			}
+
+			draw_card(card, card_pos)
+			card_pos = card_pos + {0, f32(j) * COLUMN_SPREAD}
 		}
 	}
 	for i in 0 ..< 4 {
@@ -498,17 +601,12 @@ draw :: proc() {
 }
 
 draw_card :: proc(card: Card, card_pos: V2) {
-	card_rect := sdl3.FRect {
-		card_pos.x,
-		card_pos.y,
-		CARD_NOMINAL_SIZE.x * CARD_SCALE,
-		CARD_NOMINAL_SIZE.y * CARD_SCALE,
-	}
-	card_center := V2{card_rect.x + card_rect.w / 2, card_rect.y + card_rect.h / 2}
+	rect := card_rect(card, card_pos)
+	card_center := V2{rect.x + rect.w / 2, rect.y + rect.h / 2}
 
 	if card.face_up {
 		card_variant = 0
-		render_texture(&t_card, card_rect)
+		render_texture(&t_card, rect)
 		render_texture_pos_centered(
 			card_tnum(card),
 			card_pos + {30, 45} * CARD_SCALE,
@@ -543,10 +641,10 @@ draw_card :: proc(card: Card, card_pos: V2) {
 
 			PIP_INSET_X, PIP_INSET_Y :: 84 * CARD_SCALE, 80 * CARD_SCALE
 			pip_rect := sdl3.FRect {
-				card_rect.x + PIP_INSET_X,
-				card_rect.y + PIP_INSET_Y,
-				card_rect.w - PIP_INSET_X * 2,
-				card_rect.h - PIP_INSET_Y * 2,
+				rect.x + PIP_INSET_X,
+				rect.y + PIP_INSET_Y,
+				rect.w - PIP_INSET_X * 2,
+				rect.h - PIP_INSET_Y * 2,
 			}
 			col_width := pip_rect.w / (3 - 1)
 			row_height := pip_rect.h / (f32(nrows) - 1)
@@ -569,7 +667,7 @@ draw_card :: proc(card: Card, card_pos: V2) {
 			trapf("invalid card number %v", card.number)
 		}
 	} else {
-		render_texture(&t_card_back, card_rect)
+		render_texture(&t_card_back, rect)
 	}
 }
 
@@ -656,8 +754,6 @@ render_texture_pos_centered :: proc(texture: ^Texture, pos: V2, scale: f32, upsi
 // Game loop
 
 loop :: proc() {
-	free_all(context.temp_allocator)
-
 	loop_context := context
 	ctx.t = f64(sdl3.GetTicksNS()) / 1_000_000_000
 	ctx.dt = 0.001 // default to 1ms for the first frame
@@ -668,7 +764,7 @@ loop :: proc() {
 			context = (^runtime.Context)(userdata)^
 			if event.type == .WINDOW_EXPOSED {
 				sdl3.GetWindowSize(ctx.window, &ctx.window_size.x, &ctx.window_size.y)
-				frame(false)
+				frame()
 			}
 			return true
 		}, &loop_context)
@@ -678,6 +774,10 @@ loop :: proc() {
 	}
 
 	for !ctx.should_close {
+		free_all(context.temp_allocator)
+		ctx.potential_hot_items = make([dynamic]PotentialHotItem, context.temp_allocator)
+
+		// Process events
 		e: sdl3.Event
 		if ctx.dirty {
 			// Just do a frame right away (but only one)
@@ -693,7 +793,48 @@ loop :: proc() {
 			process_event(&e)
 		}
 
-		frame(true)
+		// Potentially start a drag, so as to more lower the latency of it all
+		if ctx.mouse_down[ctx.hot_mouse_button] {
+			drag_delta := V2(ctx.mouse_pos) - ctx.drag_start_mouse_pos
+			if ctx.drag_supported &&
+			   (abs(drag_delta.x) >= DRAG_THRESHOLD || abs(drag_delta.y) >= DRAG_THRESHOLD) {
+				ctx.dragging = true
+			}
+		} else {
+			ctx.dragging = false
+		}
+
+		// Draw the frame / animate and whatever
+		frame()
+
+		// Loop over potentially hot things in reverse order because we drew them
+		// in forward order...I am good porgrammer
+		for i := len(ctx.potential_hot_items) - 1; i >= 0; i -= 1 {
+			if ctx.hot_item != "" {
+				break
+			}
+
+			potential_item := ctx.potential_hot_items[i]
+			if sdl3.PointInRectFloat(sdl3.FPoint(ctx.mouse_pos), potential_item.rect) {
+				// BILL! Why do I need parens here, Bill????
+				for btn in ([]int{MOUSE_LEFT, MOUSE_RIGHT}) {
+					if ctx.mouse_pressed[btn] {
+						set_hot(potential_item, btn)
+					}
+				}
+			}
+		}
+
+		// Clear out frame-ephemeral state
+		if ctx.mouse_released[ctx.hot_mouse_button] {
+			clear_hotness()
+		}
+		for &pressed in ctx.mouse_pressed {
+			pressed = false
+		}
+		for &released in ctx.mouse_released {
+			released = false
+		}
 	}
 }
 
@@ -705,6 +846,13 @@ process_event :: proc(e: ^sdl3.Event) {
 		ctx.mouse_pressed[e.button.button] = !ctx.mouse_down[e.button.button] && e.button.down
 		ctx.mouse_released[e.button.button] = ctx.mouse_down[e.button.button] && !e.button.down
 		ctx.mouse_down[e.button.button] = e.button.down
+	case .KEY_DOWN:
+		switch e.key.key {
+		case sdl3.K_ESCAPE:
+			if ctx.dragging {
+				clear_hotness()
+			}
+		}
 	case .MOUSE_MOTION:
 		ctx.mouse_pos = {e.motion.x, e.motion.y}
 	case .WINDOW_RESIZED:
@@ -713,24 +861,12 @@ process_event :: proc(e: ^sdl3.Event) {
 	}
 }
 
-frame :: proc(do_input: bool) {
+frame :: proc() {
 	draw()
 
 	new_t := f64(sdl3.GetTicksNS()) / 1_000_000_000
 	ctx.dt = new_t - ctx.t
 	ctx.t = new_t
-
-	// Clear out frame-ephemeral state
-	if ctx.mouse_released[ctx.hot_mouse_button] {
-		ctx.hot_item = ""
-		ctx.hot_mouse_button = 0
-	}
-	for &pressed in ctx.mouse_pressed {
-		pressed = false
-	}
-	for &released in ctx.mouse_released {
-		released = false
-	}
 }
 
 // ----------------------------------------------------------------------------
