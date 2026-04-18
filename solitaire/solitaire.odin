@@ -569,6 +569,17 @@ check_drag_ended :: proc() -> (bool, V2) {
 	}
 }
 
+clear_hotness :: proc() {
+	ctx.hot_item = ""
+	ctx.hot_mouse_button = 0
+	ctx.drag_supported = false
+	ctx.dragging = false
+	ctx.drag_canceled = false
+	ctx.drag_start_item_pos = {}
+	ctx.drag_start_mouse_pos = {}
+	clear_ui_action()
+}
+
 // Clears the current UI action. Also marks the context as dirty to make sure
 // things always re-draw afterward.
 clear_ui_action :: proc() {
@@ -991,7 +1002,11 @@ loop :: proc() {
 		if ctx.hot_item != "" {
 			// An item is already hot, potentially activate an action on it
 
-			if ctx.mouse_down[ctx.hot_mouse_button] {
+			if ctx.drag_canceled && ctx.dragging {
+				// If a drag was canceled, all interactions immediately cease
+				clear_hotness()
+				ctx.dirty = true
+			} else if ctx.mouse_down[ctx.hot_mouse_button] {
 				// If the mouse is still down, we either have a click in progress or
 				// possibly have a (possibly pending) drag and drop.
 				// TODO
@@ -1026,15 +1041,7 @@ loop :: proc() {
 				// state should be cleared.
 				log.infof("UI: Resetting all interaction state.")
 
-				ctx.hot_item = ""
-				ctx.hot_mouse_button = 0
-				ctx.drag_supported = false
-				ctx.dragging = false
-				ctx.drag_canceled = false
-				ctx.drag_start_item_pos = {}
-				ctx.drag_start_mouse_pos = {}
-
-				clear_ui_action()
+				clear_hotness()
 				ctx.dirty = true
 			}
 		} else {
