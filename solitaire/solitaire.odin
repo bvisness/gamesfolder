@@ -34,7 +34,9 @@ WINDOW_SIZE :: V2{GAME_PADDING * 2 + CARD_SIZE.x * 7 + PILE_GAP * 6, 800}
 DECK_POS :: V2{GAME_PADDING, GAME_PADDING}
 FOUNDATION_POS :: V2{WINDOW_SIZE.x - GAME_PADDING - CARD_SIZE.x * 4 - PILE_GAP * 3, GAME_PADDING}
 MAIN_Y :: GAME_PADDING + CARD_SIZE.y + 40
-COLUMN_SPREAD :: 20
+COLUMN_SPREAD :: 50
+
+CARD_DROP_RADIUS :: V2{CARD_SIZE.x / 2 - 10, CARD_SIZE.y - 40}
 
 // ----------------------------------------------------------------------------
 // Game logic
@@ -117,6 +119,15 @@ card_rect :: proc(pos: V2) -> sdl3.FRect {
 		pos.y,
 		CARD_NOMINAL_SIZE.x * CARD_SCALE,
 		CARD_NOMINAL_SIZE.y * CARD_SCALE,
+	}
+}
+
+card_drop_rect :: proc(pos: V2) -> sdl3.FRect {
+	return sdl3.FRect {
+		pos.x - CARD_DROP_RADIUS.x,
+		pos.y - CARD_DROP_RADIUS.y,
+		CARD_DROP_RADIUS.x * 2,
+		CARD_DROP_RADIUS.y * 2,
 	}
 }
 
@@ -545,8 +556,12 @@ check_drag_started :: proc(id: string) -> bool {
 
 // This one doesn't take an ID because the UI elements who call this will just
 // check on their own to see if they can receive whatever is being dragged.
-check_drag_ended :: proc() -> bool {
-	return ctx.drag_ended
+check_drag_ended :: proc() -> (bool, V2) {
+	if ctx.drag_ended {
+		return true, drag_item_pos()
+	} else {
+		return false, {}
+	}
 }
 
 // Clears the current UI action. Also marks the context as dirty to make sure
@@ -630,10 +645,27 @@ draw :: proc() {
 	// Draw the piles and columns
 	for i in 0 ..< 7 {
 		pile := &game_state.piles[i]
+		column := &game_state.columns[i]
+
 		pile_pos := V2{GAME_PADDING + f32(i) * (CARD_SIZE.x + PILE_GAP), MAIN_Y}
-		draw_pile(pile, pile_pos, false)
-		pile_top_pos := pile_pos + {0, bumpage(len(pile) - 1, false)}
-		draw_column(&game_state.columns[i], pile_top_pos)
+		pile_top_rect := draw_pile(pile, pile_pos, false)
+
+		column_top_pos := draw_column(column, rect_xy(pile_top_rect))
+		if dropped, drop_pos := check_drag_ended(); dropped {
+			dropped_here := sdl3.PointInRectFloat(
+				sdl3.FPoint(drop_pos),
+				card_drop_rect(column_top_pos),
+			)
+			// TODO: Check for card compatibility
+			if dropped_here {
+				clear_ui_action()
+				for card in game_state.dragging_column {
+					append(column, card)
+				}
+				clear(&game_state.dragging_column)
+				log.infof("Column now has %d cards", len(pile))
+			}
+		}
 	}
 
 	// Draw the foundations
@@ -753,7 +785,7 @@ draw_pile :: proc(pile: ^Pile, pos: V2, up: bool) -> sdl3.FRect {
 	return draw_card(top, {pos.x, pos.y + bumpage(len(pile) - 1, up)})
 }
 
-draw_column :: proc(pile: ^Pile, pos: V2) {
+draw_column :: proc(pile: ^Pile, pos: V2) -> V2 {
 	card_pos := pos
 	for card, i in pile {
 		id := card_id(card, context.temp_allocator)
@@ -769,8 +801,9 @@ draw_column :: proc(pile: ^Pile, pos: V2) {
 		}
 
 		draw_card(card, card_pos)
-		card_pos = card_pos + {0, f32(i) * COLUMN_SPREAD}
+		card_pos = card_pos + {0, COLUMN_SPREAD}
 	}
+	return card_pos
 }
 
 render_texture :: proc(texture: ^Texture, dst: sdl3.FRect, upside_down := false) {
