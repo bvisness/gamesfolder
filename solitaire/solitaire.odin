@@ -107,7 +107,7 @@ suit_is_red :: #force_inline proc(s: Suit) -> bool {
 	return s == .DIAMONDS || s == .HEARTS
 }
 
-card_rect :: proc(card: Card, pos: V2) -> sdl3.FRect {
+card_rect :: proc(pos: V2) -> sdl3.FRect {
 	return sdl3.FRect {
 		pos.x,
 		pos.y,
@@ -521,6 +521,8 @@ check_clicked :: proc(id: string, rect: sdl3.FRect) -> int {
 	}
 	if sdl3.PointInRectFloat(ctx.mouse_pos, release_rect) &&
 	   ctx.mouse_released[ctx.hot_mouse_button] {
+		log.infof("id %s clicked!", ctx.hot_item)
+		ctx.dirty = true
 		return ctx.hot_mouse_button
 	} else {
 		return 0
@@ -563,8 +565,44 @@ draw :: proc() {
 	sdl3.SetRenderDrawColor(ctx.renderer, 19, 127, 49, 255)
 	sdl3.RenderClear(ctx.renderer)
 
-	draw_pile(&game_state.deck, DECK_POS, true)
-	draw_pile(&game_state.draw_pile, DECK_POS + {CARD_SIZE.x + PILE_GAP, 0}, true)
+	// Draw the deck
+	{
+		id := "draw pile"
+		rect := sdl3.FRect{DECK_POS.x, DECK_POS.y, CARD_SIZE.x, CARD_SIZE.y}
+		draw_pile(&game_state.deck, DECK_POS, true)
+		advertise_hotness(id, rect, true)
+
+		if mouse_btn := check_clicked(id, rect); mouse_btn == MOUSE_LEFT {
+			if len(game_state.deck) > 0 {
+				for _ in 0 ..< min(len(game_state.deck), 3) {
+					card := pop(&game_state.deck)
+					card.face_up = true
+					append(&game_state.draw_pile, card)
+				}
+			} else {
+				n := len(game_state.draw_pile)
+				for _ in 0 ..< n {
+					card := pop(&game_state.draw_pile)
+					card.face_up = false
+					append(&game_state.deck, card)
+				}
+			}
+		}
+	}
+
+	// Draw the draw pile
+	{
+		pile_pos := DECK_POS + {CARD_SIZE.x + PILE_GAP, 0}
+		pile_top_rect := draw_pile(&game_state.draw_pile, pile_pos, true)
+
+		if len(game_state.draw_pile) > 0 {
+			id := card_id(game_state.draw_pile[len(game_state.draw_pile) - 1])
+			advertise_hotness(id, pile_top_rect, true)
+			if check_dragging(id) {
+				log.infof("TODO: start dragging card %s hooray", id)
+			}
+		}
+	}
 
 	for i in 0 ..< 7 {
 		pile := &game_state.piles[i]
@@ -577,7 +615,7 @@ draw :: proc() {
 		card_pos := pile_top_pos
 		for card, j in game_state.columns[i] {
 			id := card_id(card, context.temp_allocator)
-			advertise_hotness(id, card_rect(card, card_pos), true)
+			advertise_hotness(id, card_rect(card_pos), true)
 			if check_dragging(id) {
 				card_pos = drag_item_pos()
 			}
@@ -600,8 +638,8 @@ draw :: proc() {
 	sdl3.RenderPresent(ctx.renderer)
 }
 
-draw_card :: proc(card: Card, card_pos: V2) {
-	rect := card_rect(card, card_pos)
+draw_card :: proc(card: Card, card_pos: V2) -> sdl3.FRect {
+	rect := card_rect(card_pos)
 	card_center := V2{rect.x + rect.w / 2, rect.y + rect.h / 2}
 
 	if card.face_up {
@@ -669,6 +707,8 @@ draw_card :: proc(card: Card, card_pos: V2) {
 	} else {
 		render_texture(&t_card_back, rect)
 	}
+
+	return card_rect(card_pos)
 }
 
 bumpage :: proc(n: int, up: bool) -> f32 {
@@ -677,9 +717,9 @@ bumpage :: proc(n: int, up: bool) -> f32 {
 	return f32(n / CARDS_PER_FACEDOWN) * BUMP_AMT * (up ? -1 : 1)
 }
 
-draw_pile :: proc(pile: ^Pile, pos: V2, up: bool) {
+draw_pile :: proc(pile: ^Pile, pos: V2, up: bool) -> sdl3.FRect {
 	if len(pile) == 0 {
-		return
+		return card_rect(pos)
 	}
 
 	top := pile[len(pile) - 1]
@@ -688,7 +728,7 @@ draw_pile :: proc(pile: ^Pile, pos: V2, up: bool) {
 	for i in 0 ..< num_remaining {
 		draw_card(Card{face_up = false}, {pos.x, pos.y + bumpage(i, up)})
 	}
-	draw_card(top, {pos.x, pos.y + bumpage(len(pile) - 1, up)})
+	return draw_card(top, {pos.x, pos.y + bumpage(len(pile) - 1, up)})
 }
 
 render_texture :: proc(texture: ^Texture, dst: sdl3.FRect, upside_down := false) {
