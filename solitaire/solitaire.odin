@@ -63,7 +63,7 @@ Animation :: enum {
 GameState :: struct {
 	deck:        Pile,
 	draw_pile:   Pile,
-	stacks:      [7]Pile,
+	piles:       [7]Pile,
 	foundations: [4]Pile,
 
 	// Animation-related shenanigans
@@ -82,6 +82,15 @@ init_game :: proc() {
 		}
 	}
 	rand.shuffle(game_state.deck[:])
+
+	// Initial deal
+	for _, i in game_state.piles {
+		num_cards := i + 1
+		for _ in 0 ..< num_cards {
+			// append(pile, c) // For some reason referencing &pile in the loop and doing this doesn't work, thanks Bill
+			append(&game_state.piles[i], pop(&game_state.deck))
+		}
+	}
 }
 
 suit_is_red :: #force_inline proc(s: Suit) -> bool {
@@ -458,6 +467,17 @@ draw :: proc() {
 	sdl3.RenderClear(ctx.renderer)
 
 	draw_pile(&game_state.deck, DECK_POS)
+	draw_pile(&game_state.draw_pile, DECK_POS + {CARD_SIZE.x + PILE_GAP, 0})
+
+	for i in 0 ..< 7 {
+		draw_pile(&game_state.piles[i], {GAME_PADDING + f32(i) * (CARD_SIZE.x + PILE_GAP), MAIN_Y})
+	}
+	for i in 0 ..< 4 {
+		draw_pile(
+			&game_state.foundations[i],
+			FOUNDATION_POS + {(CARD_SIZE.x + PILE_GAP) * f32(i), 0},
+		)
+	}
 
 	sdl3.RenderPresent(ctx.renderer)
 }
@@ -546,16 +566,16 @@ draw_pile :: proc(pile: ^Pile, pos: V2) {
 	top := pile[len(pile) - 1]
 	num_remaining := len(pile) - 1
 
-	CARDS_PER_FACEDOWN :: 5
+	CARDS_PER_FACEDOWN :: 2
 	FACEDOWN_BUMP_Y :: -2
-	top_y := pos.y
-	for i in 0 ..< (num_remaining + CARDS_PER_FACEDOWN - 1) / CARDS_PER_FACEDOWN {
-		bumped_y := pos.y + FACEDOWN_BUMP_Y * f32(i)
-		draw_card(Card{face_up = false}, {pos.x, bumped_y})
-		top_y = bumped_y
+	for i in 0 ..< num_remaining {
+		draw_card(
+			Card{face_up = false},
+			{pos.x, pos.y + FACEDOWN_BUMP_Y * f32(i / CARDS_PER_FACEDOWN)},
+		)
 	}
 
-	draw_card(top, {pos.x, top_y})
+	draw_card(top, {pos.x, pos.y + FACEDOWN_BUMP_Y * f32((len(pile) - 1) / CARDS_PER_FACEDOWN)})
 }
 
 render_texture :: proc(texture: ^Texture, dst: sdl3.FRect, upside_down := false) {
