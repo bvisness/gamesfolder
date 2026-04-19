@@ -54,6 +54,9 @@ Card :: struct {
 	// Rendering/animating/interpolating
 	face_up:  bool,
 	last_pos: V2,
+
+	// For bounce animation
+	velocity: V2,
 }
 
 Pile :: [dynamic; 52]Card
@@ -81,6 +84,8 @@ GameState :: struct {
 	// Animation-related shenanigans
 	animation:        Animation,
 	num_dealt:        int,
+	bouncing_cards:   Pile,
+	last_bounce_time: f64,
 }
 game_state: GameState
 
@@ -111,6 +116,18 @@ init_game :: proc() {
 			}
 		}
 	}
+
+	// Test deal for the bounce animation
+
+	// for suit in 1 ..= 4 {
+	// 	for n in 1 ..= 13 {
+	// 		foundation := &game_state.foundations[int(suit) - 1]
+	// 		append(foundation, Card{number = u8(n), suit = Suit(suit), face_up = true})
+	// 	}
+	// }
+	// append(&game_state.draw_pile, pop(&game_state.foundations[0]))
+
+	// _ = rand.create(12)
 }
 
 suit_is_red :: #force_inline proc(s: Suit) -> bool {
@@ -137,6 +154,10 @@ card_drop_rect :: proc(pos: V2) -> sdl3.FRect {
 
 card_id :: proc(card: Card, allocator := context.allocator) -> string {
 	return fmt.aprintf("card:S%dN%d", card.suit, card.number)
+}
+
+foundation_pos :: proc(i: int) -> V2 {
+	return FOUNDATION_POS + {(CARD_SIZE.x + PILE_GAP) * f32(i), 0}
 }
 
 // ----------------------------------------------------------------------------
@@ -415,6 +436,7 @@ init_sdl :: proc() {
 		),
 		"sdl3.CreateWindowAndRenderer failed.",
 	)
+	sdl3.SetRenderVSync(ctx.renderer, 1)
 
 	ctx.canvas = must(
 		sdl3.CreateTexture(
@@ -618,7 +640,48 @@ next_variant :: proc() -> int {
 draw :: proc() {
 	sdl3.SetRenderTarget(ctx.renderer, ctx.canvas)
 	sdl3.SetRenderDrawColor(ctx.renderer, 19, 127, 49, 255)
-	sdl3.RenderClear(ctx.renderer)
+	if game_state.animation != .BOUNCE {
+		sdl3.RenderClear(ctx.renderer)
+	}
+
+	if game_state.animation != .NONE {
+		// Hack, sort of: prevent user input during animations
+		clear_ui_action()
+	}
+
+	if game_state.animation == .BOUNCE {
+		BOUNCE_DELAY :: 0.4
+		if ctx.t - game_state.last_bounce_time > BOUNCE_DELAY {
+			game_state.last_bounce_time = ctx.t
+
+			num_nonempty_foundations := 0
+			for foundation in game_state.foundations {
+				if len(foundation) > 0 {
+					num_nonempty_foundations += 1
+				}
+			}
+
+			if num_nonempty_foundations > 0 {
+				foundation_idx := rand.int_max(num_nonempty_foundations)
+				for _, i in game_state.foundations {
+					if len(game_state.foundations[i]) > 0 {
+						if foundation_idx == 0 {
+							card := pop(&game_state.foundations[i])
+							card.last_pos = foundation_pos(i)
+							card.velocity = {
+								rand.float32_range(60, 1200) * rand.choice([]f32{1, -1}),
+								rand.float32_range(-1000, 200),
+							}
+							append(&game_state.bouncing_cards, card)
+							break
+						} else {
+							foundation_idx -= 1
+						}
+					}
+				}
+			}
+		}
+	}
 
 	// Draw the deck
 	{
@@ -717,7 +780,7 @@ draw :: proc() {
 	for i in 0 ..< 4 {
 		id := fmt.tprintf("foundation:%d", i)
 		foundation := &game_state.foundations[i]
-		pos := FOUNDATION_POS + {(CARD_SIZE.x + PILE_GAP) * f32(i), 0}
+		pos := foundation_pos(i)
 		foundation_top_rect := draw_pile(foundation, pos, true)
 
 		advertise_hotness(id, foundation_top_rect, true)
@@ -765,6 +828,23 @@ draw :: proc() {
 	}
 	if len(game_state.dragging_column) > 0 {
 		draw_column(&game_state.dragging_column, drag_item_pos())
+	}
+
+	// Draw bouncing cards
+	for &card in game_state.bouncing_cards {
+		GRAVITY :: 2000
+		card.last_pos += card.velocity * f32(ctx.dt)
+		card.velocity.y += GRAVITY * f32(ctx.dt)
+		rect := card_rect(card.last_pos)
+		if card.velocity.y > 0 && rect.y + rect.h > f32(ctx.window_size.y) {
+			card.velocity.y *= -0.8
+		}
+		if sdl3.HasRectIntersectionFloat(
+			rect,
+			sdl3.FRect{0, 0, f32(ctx.window_size.x), f32(ctx.window_size.y)},
+		) {
+			draw_card(card, card.last_pos)
+		}
 	}
 
 	sdl3.SetRenderTarget(ctx.renderer, nil)
@@ -1113,6 +1193,17 @@ process_event :: proc(e: ^sdl3.Event) {
 }
 
 frame :: proc() {
+	// Check win condition
+	all_foundations_full := true
+	for &foundation in game_state.foundations {
+		if len(foundation) < 13 {
+			all_foundations_full = false
+		}
+	}
+	if all_foundations_full {
+		game_state.animation = .BOUNCE
+	}
+
 	draw()
 
 	new_t := f64(sdl3.GetTicksNS()) / 1_000_000_000
