@@ -71,6 +71,9 @@ GameState :: struct {
 	columns:          [7]Pile,
 	foundations:      [4]Pile,
 
+	// Game config
+	flip_by:          int,
+
 	// Click and drag
 	dragging_column:  Pile,
 	drag_return_pile: ^Pile,
@@ -82,7 +85,9 @@ GameState :: struct {
 game_state: GameState
 
 init_game :: proc() {
-	game_state = GameState{}
+	game_state = GameState {
+		flip_by = 3,
+	}
 
 	// Make and shuffle the deck
 	for suit in 1 ..= 4 {
@@ -625,7 +630,7 @@ draw :: proc() {
 		if mouse_btn := check_clicked(id, rect); mouse_btn == MOUSE_LEFT {
 			clear_ui_action()
 			if len(game_state.deck) > 0 {
-				for _ in 0 ..< min(len(game_state.deck), 3) {
+				for _ in 0 ..< min(len(game_state.deck), game_state.flip_by) {
 					card := pop(&game_state.deck)
 					card.face_up = true
 					append(&game_state.draw_pile, card)
@@ -1088,6 +1093,16 @@ process_event :: proc(e: ^sdl3.Event) {
 			if ctx.dragging {
 				ctx.drag_canceled = true
 			}
+		case sdl3.K_N:
+			if .LCTRL in e.key.mod || .RCTRL in e.key.mod {
+				clear_hotness()
+				init_game()
+				ctx.dirty = true
+			}
+		case sdl3.K_1:
+			game_state.flip_by = 1
+		case sdl3.K_3:
+			game_state.flip_by = 3
 		}
 	case .MOUSE_MOTION:
 		ctx.mouse_pos = {e.motion.x, e.motion.y}
