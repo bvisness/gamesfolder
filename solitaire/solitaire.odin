@@ -373,6 +373,7 @@ CTX :: struct {
 
 	// Size
 	window_size:          [2]i32,
+	pixel_density:        f32,
 
 	// Timing
 	t:                    f64,
@@ -430,21 +431,22 @@ init_sdl :: proc() {
 			"Solitaire",
 			i32(WINDOW_SIZE.x),
 			i32(WINDOW_SIZE.y),
-			sdl3.WindowFlags{},
+			sdl3.WindowFlags{.HIGH_PIXEL_DENSITY},
 			&ctx.window,
 			&ctx.renderer,
 		),
 		"sdl3.CreateWindowAndRenderer failed.",
 	)
 	sdl3.SetRenderVSync(ctx.renderer, 1)
+	ctx.pixel_density = sdl3.GetWindowPixelDensity(ctx.window)
 
 	ctx.canvas = must(
 		sdl3.CreateTexture(
 			ctx.renderer,
 			.RGBA8888,
 			.TARGET,
-			i32(WINDOW_SIZE.x),
-			i32(WINDOW_SIZE.y),
+			i32(WINDOW_SIZE.x * ctx.pixel_density),
+			i32(WINDOW_SIZE.y * ctx.pixel_density),
 		),
 		"Failed to create canvas texture",
 	)
@@ -639,6 +641,8 @@ next_variant :: proc() -> int {
 
 draw :: proc() {
 	sdl3.SetRenderTarget(ctx.renderer, ctx.canvas)
+	sdl3.SetRenderScale(ctx.renderer, ctx.pixel_density, ctx.pixel_density)
+
 	sdl3.SetRenderDrawColor(ctx.renderer, 19, 127, 49, 255)
 	if game_state.animation != .BOUNCE {
 		sdl3.RenderClear(ctx.renderer)
@@ -848,6 +852,7 @@ draw :: proc() {
 	}
 
 	sdl3.SetRenderTarget(ctx.renderer, nil)
+	sdl3.SetRenderScale(ctx.renderer, 1, 1)
 	sdl3.RenderTexture(ctx.renderer, ctx.canvas, nil, nil)
 	sdl3.RenderPresent(ctx.renderer)
 }

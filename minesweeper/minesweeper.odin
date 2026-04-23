@@ -300,17 +300,24 @@ init_sdl :: proc() -> (ok: bool) {
 		return false
 	}
 
+	WINDOW_INITIAL_SIZE :: [2]i32{400, 400}
 	if !sdl3.CreateWindowAndRenderer(
 		"Minesweeper",
-		400,
-		400,
-		sdl3.WindowFlags{.RESIZABLE},
+		WINDOW_INITIAL_SIZE.x,
+		WINDOW_INITIAL_SIZE.y,
+		sdl3.WindowFlags{.HIGH_PIXEL_DENSITY, .RESIZABLE},
 		&ctx.window,
 		&ctx.renderer,
 	) {
 		log.errorf("sdl3.CreateWindowAndRenderer failed.")
 		return false
 	}
+	sdl3.SetRenderLogicalPresentation(
+		ctx.renderer,
+		WINDOW_INITIAL_SIZE.x,
+		WINDOW_INITIAL_SIZE.y,
+		.STRETCH,
+	)
 
 	load_texture_slice_from_png("resources/minesweeper.png", &numbers)
 	load_textures_from_png(
@@ -595,8 +602,7 @@ loop :: proc() {
 	ok := sdl3.AddEventWatch(proc "c" (userdata: rawptr, event: ^sdl3.Event) -> bool {
 			context = (^runtime.Context)(userdata)^
 			if event.type == .WINDOW_EXPOSED {
-				sdl3.GetWindowSize(ctx.window, &ctx.window_size.x, &ctx.window_size.y)
-				new_game()
+				window_resized()
 				frame(false)
 			}
 			return true
@@ -637,10 +643,14 @@ process_event :: proc(e: ^sdl3.Event) {
 	case .MOUSE_MOTION:
 		ctx.mouse_pos = {e.motion.x, e.motion.y}
 	case .WINDOW_RESIZED:
-		sdl3.GetWindowSize(ctx.window, &ctx.window_size.x, &ctx.window_size.y)
-		new_game()
-		log.infof("Window now has size: %v.", ctx.window_size)
+		window_resized()
 	}
+}
+
+window_resized :: proc() {
+	sdl3.GetWindowSize(ctx.window, &ctx.window_size.x, &ctx.window_size.y)
+	sdl3.SetRenderLogicalPresentation(ctx.renderer, ctx.window_size.x, ctx.window_size.y, .STRETCH)
+	new_game()
 }
 
 frame :: proc(do_input: bool) {
